@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+
+# Node / React Native
+node_modules/
+.expo/
+*.jsbundle
+*.hbc
+
+# Android
+client/android/.gradle/
+client/android/app/build/
+client/android/build/
+*.apk
+*.aab
+*.dex
+*.class
+
+# iOS
+client/ios/Pods/
+client/ios/build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.env.local
+
+# Config (contains encrypted secrets - keep safe, but should be tracked for deployment)
+# server/config.json
+
+# Logs
+*.log

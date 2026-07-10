@@ -1,0 +1,49 @@
+schema: spec-driven
+
+context: |
+  # VoiceTalk — Voice-Controlled PC Interface
+
+  ## Overview
+  VoiceTalk lets users control a Windows PC using voice commands from an Android device. Speech is transcribed on-device, sent over WebSocket to a Python server, parsed by OpenAI GPT agent loop (with regex fallback), and executed as system commands via tool dispatch.
+
+  ## Architecture
+  - **Client:** React Native (TypeScript) — Android only, on-device STT via `@react-native-voice/voice`
+  - **Server:** Python 3.10+ — async WebSocket server using `websockets` library
+  - **Intent Parsing:** OpenAI GPT-3.5 agent loop with function-calling (async), 17 tool definitions
+  - **Communication:** WebSocket over local network (`ws://`), JSON protocol with question/answer flow
+  - **Handlers:** file_ops, app_launcher, email_sender, browser_control, bluetooth_control, media_player
+
+  ## Tech Stack
+  - Client: React Native 0.73, TypeScript 5.3, React Navigation 6
+  - Server: Python 3.10+, websockets 12+, openai 1.12+, cryptography 42+, pycaw
+  - Secrets: Fernet-encrypted config (PBKDF2-HMAC-SHA256 key derivation, 600k iterations)
+  - STT: Android native SpeechRecognizer (on-device, English US)
+
+  ## Project Structure
+  - `client/` — React Native Android app
+  - `server/` — Python Windows server
+  - `openspec/` — Specifications (16 capabilities)
+
+  ## Communication Protocol
+  Client → Server: { "type": "command", "text": "...", "api_key": "sk-..." }
+  Server → Client: { "type": "result", "success": bool, "message": "..." }
+  Server → Client: { "type": "question", "id": "q_...", "message": "...", "options": [...] }
+  Client → Server: { "type": "answer", "id": "q_...", "text": "..." }
+  Heartbeat: { "type": "ping" } → { "type": "pong" }
+
+  ## Existing Commands / Tools
+  browser_navigate, browser_search, yt_play, open_app, navigate, list_dir,
+  send_email, create_file, create_folder, delete, copy, move,
+  control_bluetooth, play_media, volume_up, volume_down, volume_mute, set_volume,
+  get_system_info, ask_user
+
+rules:
+  proposal:
+    - Each change must include spec deltas for all modified capabilities
+    - Include security considerations for any network or credential handling
+    - Specify which component(s) are affected (client, server, or both)
+    - Always include a "Non-goals" section
+  tasks:
+    - Break tasks into backend (server/) and frontend (client/) groups
+    - Include testing steps for each task
+    - Always include config/security update tasks when adding new server features
