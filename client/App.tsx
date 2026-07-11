@@ -1,5 +1,5 @@
 import React, {useState, useEffect, createContext} from 'react';
-import {TouchableOpacity, Text} from 'react-native';
+import {TouchableOpacity, Text, StyleSheet} from 'react-native';
 import {NavigationContainer} from '@react-navigation/native';
 import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {HomeScreen} from './src/screens/HomeScreen';
@@ -12,24 +12,29 @@ interface AppContextType {
   updateSettings: (s: AppSettings) => void;
 }
 
+const DEFAULT_SETTINGS: AppSettings = {
+  serverUrl: '',
+  openaiKey: '',
+  geminiKey: '',
+  opencodeKey: '',
+  openrouterKey: '',
+};
+
 export const AppContext = createContext<AppContextType>({
-  settings: {serverUrl: '', apiKey: ''},
+  settings: DEFAULT_SETTINGS,
   updateSettings: () => {},
 });
 
 const Stack = createNativeStackNavigator();
 
 const SettingsIcon: React.FC<{onPress: () => void}> = ({onPress}) => (
-  <TouchableOpacity onPress={onPress}>
-    <Text style={{fontSize: 22, color: '#2196F3'}}>{'\u2699'}</Text>
+  <TouchableOpacity onPress={onPress} style={styles.settingsBtn}>
+    <Text style={styles.settingsIcon}>⚙</Text>
   </TouchableOpacity>
 );
 
 const App: React.FC = () => {
-  const [settings, setSettings] = useState<AppSettings>({
-    serverUrl: '',
-    apiKey: '',
-  });
+  const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
 
   useEffect(() => {
     loadSettings().then(setSettings);
@@ -42,7 +47,14 @@ const App: React.FC = () => {
         updateSettings: setSettings,
       }}>
       <NavigationContainer>
-        <Stack.Navigator>
+        <Stack.Navigator
+          screenOptions={{
+            headerStyle: {backgroundColor: '#FFFFFF'},
+            headerTintColor: '#0F172A',
+            headerTitleStyle: {fontWeight: '700', fontSize: 18, color: '#0F172A'},
+            contentStyle: {backgroundColor: '#FFFFFF'},
+            headerShadowVisible: false,
+          }}>
           <Stack.Screen
             name="Home"
             component={HomeScreen}
@@ -63,5 +75,16 @@ const App: React.FC = () => {
     </AppContext.Provider>
   );
 };
+
+const styles = StyleSheet.create({
+  settingsBtn: {
+    padding: 8,
+    marginRight: 4,
+  },
+  settingsIcon: {
+    fontSize: 22,
+    color: '#64748B',
+  },
+});
 
 export default App;

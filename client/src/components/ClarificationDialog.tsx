@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Modal,
   StyleSheet,
+  ScrollView,
 } from 'react-native';
 
 interface ClarificationDialogProps {
@@ -41,16 +42,18 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
           <Text style={styles.question}>{question}</Text>
 
           {options.length > 0 && (
-            <View style={styles.options}>
-              {options.map((opt, i) => (
-                <TouchableOpacity
-                  key={i}
-                  style={styles.optionBtn}
-                  onPress={() => handleSelect(opt)}>
-                  <Text style={styles.optionText}>{opt}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+            <ScrollView style={styles.optionsScroll} showsVerticalScrollIndicator={false}>
+              <View style={styles.options}>
+                {options.map((opt, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={styles.optionBtn}
+                    onPress={() => handleSelect(opt)}>
+                    <Text style={styles.optionText}>{opt}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
           )}
 
           <TextInput
@@ -58,13 +61,14 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
             value={freeText}
             onChangeText={setFreeText}
             placeholder="Type your answer..."
-            placeholderTextColor="#999"
+            placeholderTextColor="#94A3B8"
             autoFocus={options.length === 0}
           />
 
           <View style={styles.actions}>
             <TouchableOpacity
-              style={styles.sendBtn}
+              style={[styles.sendBtn, !freeText.trim() && styles.sendBtnDisabled]}
+              disabled={!freeText.trim()}
               onPress={() => {
                 const text = freeText.trim();
                 if (text) {
@@ -86,48 +90,51 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
   },
   dialog: {
-    backgroundColor: '#FFF',
-    borderRadius: 14,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
     padding: 24,
     width: '100%',
     maxWidth: 400,
   },
   question: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#222',
-    marginBottom: 18,
-    lineHeight: 24,
+    color: '#1E293B',
+    marginBottom: 16,
+    lineHeight: 22,
+  },
+  optionsScroll: {
+    maxHeight: 200,
   },
   options: {
-    marginBottom: 14,
+    marginBottom: 12,
   },
   optionBtn: {
-    backgroundColor: '#F0F0F0',
-    borderRadius: 8,
-    paddingVertical: 12,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    paddingVertical: 11,
     paddingHorizontal: 16,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   optionText: {
-    fontSize: 15,
-    color: '#333',
+    fontSize: 14,
+    color: '#1E293B',
   },
   input: {
-    backgroundColor: '#F8F8F8',
+    backgroundColor: '#F8FAFC',
     borderWidth: 1,
-    borderColor: '#DDD',
-    borderRadius: 8,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    fontSize: 15,
-    color: '#333',
+    fontSize: 14,
+    color: '#1E293B',
     marginBottom: 14,
   },
   actions: {
@@ -136,14 +143,17 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   sendBtn: {
-    backgroundColor: '#2196F3',
-    borderRadius: 8,
+    backgroundColor: '#2563EB',
+    borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 20,
   },
+  sendBtnDisabled: {
+    backgroundColor: '#CBD5E1',
+  },
   sendBtnText: {
-    color: '#FFF',
-    fontSize: 15,
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '600',
   },
   cancelBtn: {
@@ -151,7 +161,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   cancelBtnText: {
-    color: '#888',
-    fontSize: 15,
+    color: '#64748B',
+    fontSize: 14,
   },
 });

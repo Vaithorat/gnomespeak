@@ -3,6 +3,7 @@ import {ResultMessage, QuestionMessage, ConnectionStatus} from '../types';
 type ResultCallback = (result: ResultMessage) => void;
 type QuestionCallback = (question: QuestionMessage) => void;
 type StatusCallback = (status: ConnectionStatus) => void;
+type ConnectedCallback = (serverUrl: string) => void;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -12,12 +13,14 @@ export class WebSocketService {
   private ws: WebSocket | null = null;
   private url: string = '';
   private apiKey: string = '';
+  private provider: string = 'openai';
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts: number = 0;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private resultCallback: ResultCallback | null = null;
   private questionCallback: QuestionCallback | null = null;
   private statusCallback: StatusCallback | null = null;
+  private connectedCallback: ConnectedCallback | null = null;
   private shouldReconnect: boolean = true;
 
   onResult(callback: ResultCallback): void {
@@ -32,9 +35,14 @@ export class WebSocketService {
     this.statusCallback = callback;
   }
 
-  connect(url: string, apiKey: string): void {
+  onConnected(callback: ConnectedCallback): void {
+    this.connectedCallback = callback;
+  }
+
+  connect(url: string, apiKey: string, provider: string = 'openai'): void {
     this.url = url;
     this.apiKey = apiKey;
+    this.provider = provider;
     this.shouldReconnect = true;
     this.reconnectAttempts = 0;
     this._connect();
@@ -45,19 +53,26 @@ export class WebSocketService {
     this._cleanup();
   }
 
-  send(text: string): void {
+  send(text: string, sessionId?: string): void {
     if (this.ws?.readyState !== WebSocket.OPEN) {
-      this._notifyStatus('error');
       return;
     }
 
-    const message = JSON.stringify({
+    const msg: Record<string, string> = {
       type: 'command',
       text,
       api_key: this.apiKey,
-    });
+      provider: this.provider,
+    };
+    if (sessionId) {
+      msg.session_id = sessionId;
+    }
 
-    this.ws.send(message);
+    this.ws.send(JSON.stringify(msg));
+  }
+
+  sendWithSession(text: string, sessionId: string): void {
+    this.send(text, sessionId);
   }
 
   sendAnswer(id: string, text: string): void {
@@ -67,16 +82,33 @@ export class WebSocketService {
     this.ws.send(JSON.stringify({type: 'answer', id, text}));
   }
 
+  private _normalizeUrl(raw: string): string {
+    let u = raw.trim();
+    if (u.startsWith('ws://') || u.startsWith('wss://')) {
+      return u;
+    }
+    if (u.startsWith('https://')) {
+      return u.replace(/^https:\/\//, 'wss://');
+    }
+    if (u.startsWith('http://')) {
+      return u.replace(/^http:\/\//, 'ws://');
+    }
+    return `ws://${u}`;
+  }
+
   private _connect(): void {
     this._cleanup();
     this._notifyStatus('connecting');
 
+    const wsUrl = this._normalizeUrl(this.url);
+
     try {
-      this.ws = new WebSocket(`ws://${this.url}`);
+      this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
         this._notifyStatus('connected');
+        this.connectedCallback?.(this._normalizeUrl(this.url));
         this._startPing();
       };
 

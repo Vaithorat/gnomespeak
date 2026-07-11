@@ -2,19 +2,39 @@ import json
 import re
 from openai import AsyncOpenAI
 
-SYSTEM_PROMPT = """You are a Windows PC assistant, controlled by voice from an Android phone. Your job is to understand what the user wants and accomplish it using the available tools.
+try:
+    import google.genai as genai
+except ImportError:
+    genai = None
 
-Rules:
-- Use tools to accomplish tasks. You can chain multiple tool calls.
-- If the user's request is ambiguous, use the `ask_user` tool to clarify.
-- After completing a task, summarize what you did.
-- Be concise and natural in your responses.
-- For opening websites, use `browser_navigate` with the full URL.
-- For playing songs/videos, use `yt_play` to search YouTube.
+SYSTEM_PROMPT = """You are a Windows PC assistant, controlled by voice from an Android phone. You control the PC COMPLETELY — you NEVER ask the user to click, tap, or do anything on the computer. You do everything yourself using your tools.
+
+CRITICAL RULES — ALWAYS FOLLOW:
+1. ALWAYS respond in English, regardless of what language the user speaks.
+2. YOU control the PC. NEVER say "click on the video", "you can now...", "you can find it at...". Use your tools instead.
+3. NEVER open the same URL twice. If a page is already open, use media_control to interact with it instead.
+4. Break complex tasks into steps. Execute each step, verify the result, then proceed.
+5. If a tool fails, analyze the error and try an alternative approach before giving up.
+
+YouTube / Video Rules:
+- To play a YouTube video, use ONLY `yt_play` — it searches AND opens the video in ONE step. Do NOT call browser_navigate, browser_search, or yt_search before yt_play.
+- For "play X" requests, call ONLY `yt_play(query="X")`. Do NOT open firefox first. Do NOT open youtube.com first. Just call yt_play directly.
+- `yt_play` opens a real browser, navigates to the video, and auto-plays it. You do NOT need to call media_control after yt_play.
+- To browse YouTube results without playing, use `yt_search`.
+- When user wants a specific video from results, use `yt_results` to fetch matches, present via `ask_user`, then open with `browser_navigate`.
+- NEVER open multiple browser tabs for a single task. All navigation happens in one browser.
+
+Bluetooth / Media:
 - For Bluetooth control, use `control_bluetooth` to turn on/off and connect devices.
 - For volume control, use `set_volume`, `volume_up`, `volume_down`, or `volume_mute`.
 - To play a local file, use `play_media` to search and play from Music/Downloads.
-- Prefer browser actions over trying to open local apps for web services."""
+- For keyboard/media actions (play, pause, skip, fullscreen), use `media_control`.
+
+General:
+- Use `media_control` for keyboard actions like play/pause, volume, fullscreen, skip forward/backward.
+- For opening any website, use `browser_navigate` with the full URL.
+- Prefer browser actions over trying to open local apps for web services.
+- Be concise. After completing a task, say what you did in 1-2 sentences maximum."""
 
 TOOLS = [
     {
@@ -57,13 +77,47 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "yt_play",
-            "description": "Search YouTube and open the results page for a song or video",
+            "description": "Search YouTube for a song/video and navigate to the first result with autoplay",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
                         "description": "Song name, video title, or search query",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "yt_search",
+            "description": "Open YouTube search results page for browsing (does not autoplay)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for YouTube",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "yt_results",
+            "description": "Fetch top YouTube search results with titles and URLs — use this when the user wants to pick a specific video from search results, so you can present the options via ask_user",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query for YouTube",
                     }
                 },
                 "required": ["query"],
@@ -340,48 +394,272 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "media_control",
+            "description": "Control media playback and browser via keyboard shortcuts. Use play_pause to start/resume a paused video (e.g. YouTube). Use fullscreen for fullscreen mode. IMPORTANT: After opening a YouTube video with yt_play, ALWAYS call this with action='play_pause' to ensure it starts playing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "play_pause",
+                            "next_track",
+                            "prev_track",
+                            "volume_up",
+                            "volume_down",
+                            "mute",
+                            "fullscreen",
+                            "refresh",
+                            "forward",
+                            "backward",
+                            "escape",
+                            "enter",
+                            "tab",
+                        ],
+                        "description": "Keyboard action to perform. play_pause = Space key (starts/pauses video).",
+                    }
+                },
+                "required": ["action"],
+            },
+        },
+    },
 ]
+
+
+OPENGODE_BASE_URL = "https://opencode.ai/zen/go/v1"
+OPENGODE_MODEL = "deepseek-v4-flash"
+GEMINI_MODEL = "gemini-2.0-flash"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+
+
+MAX_SESSIONS = 50
+MAX_SESSION_MESSAGES = 100
 
 
 class IntentParser:
     def __init__(self, config):
         self.config = config
-        self.client = None
-        self._init_client()
+        self.default_client = None
+        self.default_provider = None
+        self.sessions: dict[str, list[dict]] = {}
+        self._init_default()
 
-    def _init_client(self):
-        api_key = self.config.get_secret("openai_api_key")
-        if api_key:
-            self.client = AsyncOpenAI(api_key=api_key)
+    def _init_default(self):
+        for provider, key_name in [
+            ("openai", "openai_api_key"),
+            ("opencode", "opencode_api_key"),
+            ("gemini", "gemini_api_key"),
+            ("openrouter", "openrouter_api_key"),
+        ]:
+            api_key = self.config.get_secret(key_name)
+            if api_key:
+                self.default_provider = provider
+                self._build_client(provider, api_key)
+                return
 
-    async def parse(self, text: str, executor=None, ask_callback=None) -> dict:
-        if self.client:
+    def _build_client(self, provider: str, api_key: str):
+        if provider == "openai":
+            self.default_client = AsyncOpenAI(api_key=api_key)
+        elif provider == "opencode":
+            self.default_client = AsyncOpenAI(
+                api_key=api_key, base_url=OPENGODE_BASE_URL
+            )
+        elif provider == "gemini":
+            self.default_client = genai.Client(api_key=api_key)
+        elif provider == "openrouter":
+            self.default_client = AsyncOpenAI(
+                api_key=api_key, base_url=OPENROUTER_BASE_URL
+            )
+
+    def _make_client(self, provider: str, api_key: str):
+        if provider == "openai":
+            return ("openai", AsyncOpenAI(api_key=api_key))
+        elif provider == "opencode":
+            return ("openai", AsyncOpenAI(api_key=api_key, base_url=OPENGODE_BASE_URL))
+        elif provider == "gemini":
+            return ("gemini", genai.Client(api_key=api_key))
+        elif provider == "openrouter":
+            return ("openai", AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL))
+        return None, None
+
+    async def parse(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None) -> dict:
+        actual_provider = provider or self.default_provider
+        if not actual_provider:
+            command = self._parse_with_rules(text)
+            return await executor.execute(command)
+
+        actual_client = self.default_client
+        client_type = actual_provider
+
+        if api_key and provider:
+            result = self._make_client(provider, api_key)
+            if result:
+                client_type, actual_client = result
+
+        if actual_client:
             try:
-                return await self._parse_with_agent(text, executor, ask_callback)
+                if client_type == "gemini":
+                    return await self._parse_with_gemini(text, executor, actual_client, ask_callback, session_id)
+                else:
+                    return await self._parse_with_agent(text, executor, ask_callback, actual_client, actual_provider, session_id)
             except Exception as e:
                 return {
                     "success": False,
                     "message": f"Agent error: {str(e)}",
                 }
+
         command = self._parse_with_rules(text)
-        return executor.execute(command)
+        return await executor.execute(command)
+
+    async def _parse_with_gemini(self, text: str, executor, client, ask_callback=None, session_id=None) -> dict:
+        if genai is None:
+            return {"success": False, "message": "Gemini not available. Install google-genai."}
+
+        gemini_tools = []
+        for t in TOOLS:
+            fn = t["function"]
+            props = fn["parameters"].get("properties", {})
+            required = fn["parameters"].get("required", [])
+            schema_props = {}
+            for pname, pdef in props.items():
+                sp = {"type": pdef.get("type", "string")}
+                if "description" in pdef:
+                    sp["description"] = pdef["description"]
+                if "enum" in pdef:
+                    sp["enum"] = pdef["enum"]
+                schema_props[pname] = sp
+            gemini_tools.append(genai.types.Tool(
+                function_declarations=[genai.types.FunctionDeclaration(
+                    name=fn["name"],
+                    description=fn["description"],
+                    parameters=genai.types.Schema(
+                        type="OBJECT",
+                        properties=schema_props,
+                        required=required,
+                    ),
+                )]
+            ))
+
+        if session_id and session_id in self.sessions:
+            history = self.sessions[session_id]
+            contents = [{"role": "user", "parts": [{"text": SYSTEM_PROMPT}]}]
+            contents.append({"role": "model", "parts": [{"text": "Understood. I will follow all rules including English-only responses, full PC control, and single-tab browser execution."}]})
+            for msg in history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    continue
+                elif role in ("assistant", "tool"):
+                    contents.append({"role": "model", "parts": [{"text": content}]})
+                elif role == "user":
+                    contents.append({"role": "user", "parts": [{"text": content}]})
+            contents.append({"role": "user", "parts": [{"text": text}]})
+            full_contents = contents
+        else:
+            full_contents = [
+                {"role": "user", "parts": [{"text": f"{SYSTEM_PROMPT}\n\nUser said: {text}"}]},
+            ]
+
+        for iteration in range(5):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=full_contents,
+                    config=genai.types.GenerateContentConfig(
+                        tools=gemini_tools,
+                        temperature=0.1,
+                    ),
+                )
+            except Exception as e:
+                return {"success": False, "message": f"Gemini error: {str(e)}"}
+
+            if not response.candidates:
+                return {"success": False, "message": "Gemini returned no response"}
+
+            candidate = response.candidates[0]
+            if candidate.content is None:
+                return {"success": False, "message": "Gemini returned empty content"}
+
+            parts = candidate.content.parts
+            if not parts:
+                return {"success": False, "message": "Gemini returned no parts"}
+
+            has_function_call = False
+            text_response = ""
+
+            for part in parts:
+                if hasattr(part, "function_call") and part.function_call:
+                    has_function_call = True
+                    fc = part.function_call
+                    name = fc.name
+                    args = dict(fc.args) if fc.args else {}
+
+                    if name == "ask_user" and ask_callback:
+                        result = await ask_callback(
+                            args.get("question", ""),
+                            args.get("options", []),
+                        )
+                    elif executor:
+                        result = await executor.execute_tool(name, args)
+                    else:
+                        result = {"success": False, "message": "No executor available"}
+
+                    full_contents.append({"role": "model", "parts": [{"function_call": fc}]})
+                    full_contents.append({"role": "user", "parts": [{"function_response": genai.types.FunctionResponse(
+                        name=name,
+                        response=result,
+                    )}]})
+
+                    if session_id:
+                        if session_id not in self.sessions:
+                            self.sessions[session_id] = []
+                        self.sessions[session_id].append({"role": "user", "content": text})
+                        self.sessions[session_id].append({"role": "assistant", "content": f"Called {name}({args}) → {result.get('message', '')}"})
+                        self._store_session(session_id, self.sessions[session_id])
+                else:
+                    text_response += part.text or ""
+
+            if not has_function_call:
+                if session_id:
+                    if session_id not in self.sessions:
+                        self.sessions[session_id] = []
+                    self.sessions[session_id].append({"role": "user", "content": text})
+                    self.sessions[session_id].append({"role": "assistant", "content": text_response or "Done."})
+                    self._store_session(session_id, self.sessions[session_id])
+                return {"success": True, "message": text_response or "Done."}
+
+        return {"success": False, "message": "Gemini reached maximum iterations."}
 
     async def _parse_with_agent(
-        self, text: str, executor, ask_callback
+        self, text: str, executor, ask_callback, client, provider="openai", session_id=None
     ) -> dict:
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ]
+        model = "gpt-3.5-turbo"
+        if provider == "opencode":
+            model = OPENGODE_MODEL
+        elif provider == "openrouter":
+            model = OPENROUTER_MODEL
+
+        if session_id and session_id in self.sessions:
+            messages = list(self.sessions[session_id])
+            messages.append({"role": "user", "content": text})
+        else:
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ]
 
         for _ in range(10):
-            response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
+            response = await client.chat.completions.create(
+                model=model,
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
                 temperature=0.1,
-                max_tokens=500,
+                max_tokens=1024,
             )
 
             msg = response.choices[0].message
@@ -394,7 +672,10 @@ class IntentParser:
 
                 for tool_call in msg.tool_calls:
                     name = tool_call.function.name
-                    args = json.loads(tool_call.function.arguments)
+                    try:
+                        args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        args = {}
 
                     if name == "ask_user" and ask_callback:
                         result = await ask_callback(
@@ -402,7 +683,7 @@ class IntentParser:
                             args.get("options", []),
                         )
                     elif executor:
-                        result = executor.execute_tool(name, args)
+                        result = await executor.execute_tool(name, args)
                     else:
                         result = {"success": False, "message": "No executor available"}
 
@@ -412,12 +693,25 @@ class IntentParser:
                         "content": json.dumps(result),
                     })
             else:
+                if session_id:
+                    self._store_session(session_id, messages)
+                    self.sessions[session_id].append({
+                        "role": "assistant", "content": msg.content or "Done.",
+                    })
                 return {
                     "success": True,
                     "message": msg.content or "Done.",
                 }
 
+        if session_id:
+            self._store_session(session_id, messages)
         return {"success": False, "message": "Agent reached maximum iterations."}
+
+    def _store_session(self, session_id: str, messages: list[dict]):
+        self.sessions[session_id] = list(messages[-MAX_SESSION_MESSAGES:])
+        if len(self.sessions) > MAX_SESSIONS:
+            oldest = list(self.sessions.keys())[0]
+            del self.sessions[oldest]
 
     def _parse_with_rules(self, text: str) -> dict:
         text_lower = text.lower().strip()

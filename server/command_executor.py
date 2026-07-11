@@ -5,6 +5,7 @@ from handlers.email_sender import EmailSender
 from handlers.browser_control import BrowserControl
 from handlers.bluetooth_control import BluetoothControl
 from handlers.media_player import MediaPlayer
+from handlers.media_control import MediaControl
 
 
 class CommandExecutor:
@@ -15,13 +16,14 @@ class CommandExecutor:
         self.browser = BrowserControl()
         self.bluetooth = BluetoothControl()
         self.media_player = MediaPlayer()
+        self.media_control = MediaControl()
 
-    def execute(self, command: dict) -> dict:
+    async def execute(self, command: dict) -> dict:
         action = command.get("action", "")
         params = command.get("params", {})
-        return self.execute_tool(action, params)
+        return await self.execute_tool(action, params)
 
-    def execute_tool(self, name: str, args: dict) -> dict:
+    async def execute_tool(self, name: str, args: dict) -> dict:
         if name == "navigate":
             return self.file_ops.navigate(args.get("path", ""))
         elif name == "list_dir":
@@ -51,13 +53,17 @@ class CommandExecutor:
                 args.get("body", ""),
             )
         elif name in ("browser_navigate", "open_url"):
-            return self.browser.navigate(args.get("url", ""))
+            return await self.browser.navigate(args.get("url", ""))
         elif name == "browser_search":
-            return self.browser.search_web(
+            return await self.browser.search_web(
                 args.get("query", ""), args.get("engine", "google")
             )
         elif name == "yt_play":
-            return self.browser.yt_play_first(args.get("query", ""))
+            return await self.browser.yt_play_first(args.get("query", ""))
+        elif name == "yt_search":
+            return await self.browser.yt_search(args.get("query", ""))
+        elif name == "yt_results":
+            return await self.browser.yt_results(args.get("query", ""))
         elif name == "control_bluetooth":
             return self.bluetooth.execute(args)
         elif name == "play_media":
@@ -69,9 +75,15 @@ class CommandExecutor:
         elif name == "volume_mute":
             return self.media_player.volume_mute()
         elif name == "set_volume":
-            return self.media_player.set_volume(int(args.get("level", 50)))
+            try:
+                level = int(args.get("level", 50))
+            except (ValueError, TypeError):
+                level = 50
+            return self.media_player.set_volume(level)
         elif name == "get_system_info":
             return self._get_system_info()
+        elif name == "media_control":
+            return self.media_control.execute(args.get("action", "play_pause"))
         else:
             return {
                 "success": False,

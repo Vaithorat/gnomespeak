@@ -27,13 +27,27 @@ The Android client SHALL persist user settings across app restarts.
 
 ### Requirement: Server-Side Encrypted Config
 The Windows server SHALL encrypt secrets at rest using Fernet symmetric encryption.
-#### Scenario: First-Time Setup
-- GIVEN the server is started for the first time
-- WHEN no config.json exists
-- THEN the system SHALL prompt for a master password
-- AND SHALL derive a Fernet encryption key using PBKDF2-HMAC-SHA256 with 600,000 iterations
-- AND SHALL generate a random 16-byte salt
-- AND SHALL prompt for the OpenAI API key
+#### Scenario: Auto-Load OpenCode Key
+- GIVEN the server starts
+- WHEN an OpenCode auth file exists at `~/.local/share/opencode/auth.json`
+- THEN the system SHALL read the "opencode-go" or "opencode" API key from it
+- AND SHALL store it in the encrypted config automatically
+- AND SHALL NOT prompt the user for an API key
+
+#### Scenario: Client-Provided Key
+- GIVEN a client connects with a command
+- WHEN the command includes an `api_key` field
+- THEN the server SHALL use that key for OpenAI calls instead of the stored key
+- AND SHALL create a temporary AsyncOpenAI client for that request
+
+#### Scenario: Key Fallback Chain
+- GIVEN no client API key is provided
+- WHEN the server needs to make an OpenAI call
+- THEN the system SHALL try, in order:
+  - Client-provided key (from `api_key` field)
+  - OpenCode key (from `auth.json`)
+  - Stored key (from encrypted `config.json`)
+- AND SHALL fall back to regex rules if no key is available
 
 #### Scenario: Unlock Existing Config
 - GIVEN a config.json already exists with encrypted data

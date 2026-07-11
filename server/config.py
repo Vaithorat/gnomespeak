@@ -7,6 +7,9 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 
+DEFAULT_MASTER_PASSWORD = "voicetalk"
+
+
 class Config:
     def __init__(self, config_path="config.json"):
         self.config_path = Path(config_path)
@@ -32,6 +35,9 @@ class Config:
             "encrypted_data": None,
             "salt": None,
         }
+
+    def auto_unlock(self):
+        self.unlock(DEFAULT_MASTER_PASSWORD)
 
     def unlock(self, master_password: str):
         salt = (

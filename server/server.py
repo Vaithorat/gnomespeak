@@ -21,12 +21,13 @@ class VoiceTalkServer:
         self.executor = None
         self._ws = None
         self._pending_questions: dict[str, asyncio.Future] = {}
+        self.shutdown_event = asyncio.Event()
         self._setup_signal_handlers()
 
     def _setup_signal_handlers(self):
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
-                signal.signal(sig, lambda s, f: sys.exit(0))
+                signal.signal(sig, lambda s, f: self.shutdown_event.set())
             except (ValueError, AttributeError):
                 pass
 
@@ -34,6 +35,9 @@ class VoiceTalkServer:
         self.config.unlock(master_password)
         self.intent_parser = IntentParser(self.config)
         self.executor = CommandExecutor(self.config)
+        stored_key = self.config.get_secret("openai_api_key")
+        if stored_key:
+            print("Found stored API key in config")
 
     async def _send_question(
         self, message: str, options: list[str] | None = None
@@ -78,11 +82,10 @@ class VoiceTalkServer:
                 continue
 
             api_key = data.get("api_key", "")
-            if not self.auth.validate(api_key):
-                await self._send_result(websocket, False, "Invalid API key")
-                continue
-
+            provider = data.get("provider", "")
             text = data.get("text", "").strip()
+            session_id = data.get("session_id", "")
+
             if not text:
                 await self._send_result(websocket, False, "Empty command")
                 continue
@@ -91,7 +94,12 @@ class VoiceTalkServer:
                 lambda q, opts: self._send_question(q, opts)
             )
             result = await self.intent_parser.parse(
-                text, executor=self.executor, ask_callback=ask_callback
+                text,
+                executor=self.executor,
+                ask_callback=ask_callback,
+                api_key=api_key,
+                provider=provider,
+                session_id=session_id or None,
             )
             result["type"] = "result"
             await websocket.send(json.dumps(result))
@@ -115,6 +123,7 @@ class VoiceTalkServer:
         )
 
     async def run_async(self):
+        self.shutdown_event.clear()
         async with websockets.serve(
             self.handle_client,
             self.config.host,
@@ -126,26 +135,16 @@ class VoiceTalkServer:
                 f"VoiceTalk server running on ws://{self.config.host}:{self.config.port}"
             )
             print("Press Ctrl+C to stop.")
-            await asyncio.Future()
+            await self.shutdown_event.wait()
 
     def run(self):
         asyncio.run(self.run_async())
 
 
 def prompt_setup(server: VoiceTalkServer):
-    print("VoiceTalk Server Setup")
-    print("======================")
+    return
 
-    if not server.config.get_secret("openai_api_key"):
-        print("\nFirst-time setup detected.")
-
-        api_key = input("Enter your OpenAI API key (sk-...): ").strip()
-        while not api_key.startswith("sk-"):
-            api_key = input(
-                "Invalid key. Enter your OpenAI API key (sk-...): "
-            ).strip()
-        server.config.set_secret("openai_api_key", api_key)
-
+    if not server.config.get_secret("smtp_server"):
         if input("\nConfigure email? (y/N): ").strip().lower() == "y":
             server.config.set_secret(
                 "smtp_server",
@@ -166,30 +165,13 @@ def prompt_setup(server: VoiceTalkServer):
                 "smtp_password",
                 input("SMTP password: ").strip(),
             )
-
-        server.config.save()
-        print("\nConfiguration saved.\n")
+            server.config.save()
+            print("\nConfiguration saved.\n")
 
 
 if __name__ == "__main__":
     server = VoiceTalkServer()
-
-    if len(sys.argv) > 1:
-        master_password = sys.argv[1]
-    else:
-        import getpass
-
-        master_password = getpass.getpass("Enter master password: ").strip()
-
-    if not master_password:
-        print("Master password is required.")
-        sys.exit(1)
-
-    try:
-        server.setup(master_password)
-    except ValueError as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
+    server.setup("voicetalk")
     prompt_setup(server)
     try:
         server.run()

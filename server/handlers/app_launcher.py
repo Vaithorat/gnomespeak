@@ -1,4 +1,3 @@
-import subprocess
 import os
 from pathlib import Path
 
@@ -11,6 +10,35 @@ class AppLauncher:
             Path("C:\\Program Files (x86)"),
             Path(os.environ.get("LOCALAPPDATA", "")) / "Programs",
         ]
+        self.aliases = {
+            "browser": ["chrome", "firefox", "edge", "msedge", "brave", "opera", "vivaldi", "internet explorer", "iexplore"],
+            "the browser": ["chrome", "firefox", "edge", "msedge", "brave", "opera", "vivaldi"],
+            "music player": ["spotify", "wmplayer", "music", "groove music", "windows media player"],
+            "video player": ["vlc", "movies & tv", "windows media player", "mpv"],
+            "file explorer": ["explorer", "file explorer"],
+            "explorer": ["explorer", "file explorer"],
+            "terminal": ["cmd", "command prompt", "windows terminal", "powershell"],
+            "command prompt": ["cmd", "command prompt"],
+            "notepad": ["notepad"],
+            "calculator": ["calc", "calculator"],
+            "settings": ["ms-settings:", "settings"],
+            "control panel": ["control", "control panel"],
+            "task manager": ["taskmgr", "task manager"],
+            "snipping tool": ["snippingtool", "snipping tool"],
+            "paint": ["mspaint", "paint"],
+            "word": ["winword", "word", "microsoft word"],
+            "excel": ["excel", "microsoft excel"],
+            "powershell": ["powershell", "pwsh"],
+            "vs code": ["code", "visual studio code"],
+            "vscode": ["code", "visual studio code"],
+            "visual studio code": ["code", "visual studio code"],
+            "discord": ["discord"],
+            "spotify": ["spotify"],
+            "steam": ["steam"],
+            "whatsapp": ["whatsapp"],
+            "telegram": ["telegram"],
+            "slack": ["slack"],
+        }
 
     def _get_start_menu_dirs(self):
         dirs = []
@@ -34,23 +62,48 @@ class AppLauncher:
         return dirs
 
     def find_app(self, name: str):
-        name_lower = name.lower()
+        name_lower = name.lower().strip()
 
+        candidate_names = [name_lower]
+        if name_lower in self.aliases:
+            candidate_names = self.aliases[name_lower]
+
+        if name_lower.startswith("the "):
+            without_article = name_lower[4:]
+            if without_article in self.aliases:
+                candidate_names = self.aliases[without_article]
+            else:
+                candidate_names.append(without_article)
+
+        if name_lower.startswith("a ") or name_lower.startswith("an "):
+            without_article = name_lower.split(" ", 1)[1]
+            if without_article in self.aliases:
+                candidate_names = self.aliases[without_article]
+            else:
+                candidate_names.append(without_article)
+
+        for try_name in candidate_names:
+            result = self._search_name(try_name)
+            if result:
+                return result
+        return None
+
+    def _search_name(self, name: str):
         for start_dir in self.start_menu_dirs:
             if not start_dir.exists():
                 continue
             for candidate in start_dir.rglob("*.lnk"):
-                if name_lower in candidate.stem.lower():
+                if name in candidate.stem.lower():
                     return str(candidate)
             for candidate in start_dir.rglob("*.exe"):
-                if name_lower in candidate.stem.lower():
+                if name in candidate.stem.lower():
                     return str(candidate)
 
         for common_dir in self.common_dirs:
             if not common_dir.exists():
                 continue
             for candidate in common_dir.rglob("*.exe"):
-                if name_lower in candidate.stem.lower():
+                if name in candidate.stem.lower():
                     return str(candidate)
 
         path_exts = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";")
@@ -71,7 +124,7 @@ class AppLauncher:
 
         if exe_path:
             try:
-                subprocess.Popen([exe_path], shell=False)
+                os.startfile(exe_path)
                 return {"success": True, "message": f"Opened {name}"}
             except Exception as e:
                 return {
@@ -80,7 +133,7 @@ class AppLauncher:
                 }
 
         try:
-            subprocess.Popen(["cmd", "/c", "start", "", name], shell=True)
+            os.startfile(name)
             return {"success": True, "message": f"Attempted to open {name}"}
         except Exception as e:
             return {

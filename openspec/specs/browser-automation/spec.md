@@ -1,7 +1,7 @@
 # Browser Automation
 
 ## Purpose
-Control web browsers via voice — navigate to websites, search the web, and open YouTube content. The AI agent drives the intelligence; the server simply opens URLs in the default browser.
+Control the web browser programmatically via voice commands — navigate to websites, search the web, open YouTube content, and simulate keyboard interactions. The AI agent drives the intelligence; the server opens URLs and sends keyboard shortcuts via pyautogui.
 
 ## Requirements
 
@@ -31,15 +31,58 @@ The system SHALL search the web via browser.
 - WHEN the command executes
 - THEN the system SHALL use the specified search engine (google, bing, duckduckgo)
 
-### Requirement: YouTube Search & Play (Server)
-The system SHALL open YouTube search results for a query.
-#### Scenario: Play via YouTube Search
+### Requirement: YouTube Integration (Server)
+The system SHALL open YouTube search results and play videos autonomously.
+#### Scenario: Play via yt_play
 - GIVEN the user says "play despacito"
-- WHEN the command executes
-- THEN the system SHALL construct `https://www.youtube.com/results?search_query=<encoded_query>`
-- AND SHALL open it in the default browser
-- AND SHALL return "Opened YouTube search results for 'despacito'"
-- AND the user can click the first video to play
+- WHEN the `yt_play` tool executes
+- THEN the system SHALL search YouTube via yt-dlp
+- AND SHALL open the first video's watch page
+- AND SHALL call `media_control(action='play_pause')` to ensure playback
+- AND SHALL NOT require user interaction
+
+#### Scenario: Browse via yt_search
+- GIVEN the user says "search YouTube for relaxing music"
+- WHEN the `yt_search` tool executes
+- THEN the system SHALL open the YouTube search results page
+- AND SHALL return the results to the LLM for presentation
+
+### Requirement: Keyboard Simulation (Server)
+The system SHALL simulate keyboard shortcuts for browser and media control via pyautogui.
+#### Scenario: Play/Pause Video
+- GIVEN a YouTube video is open in the browser
+- WHEN `media_control(action='play_pause')` executes
+- THEN the system SHALL press the Space key via pyautogui
+- AND SHALL return "Toggled play/pause (Space)"
+
+#### Scenario: Volume Control via Media Keys
+- GIVEN the user says "volume up" or "mute"
+- WHEN the media_control tool executes
+- THEN the system SHALL press the appropriate media key (volume_up, volume_down, mute)
+
+#### Scenario: Fullscreen Toggle
+- GIVEN a video is playing in the browser
+- WHEN `media_control(action='fullscreen')` executes
+- THEN the system SHALL press F11 to toggle fullscreen
+
+#### Scenario: Browser Navigation Keys
+- GIVEN the user says "go back" or "refresh"
+- WHEN the media_control tool executes
+- THEN the system SHALL press the appropriate key (Escape, F5, etc.)
+
+### Requirement: Single-Tab Execution (Server)
+The system SHALL avoid opening multiple browser tabs for a single task.
+#### Scenario: One Tool Does Everything
+- GIVEN the user says "open firefox, go to youtube and search golmaal 3 and play the first video"
+- WHEN the LLM processes this
+- THEN the LLM SHALL call ONLY `yt_play` with the full query
+- AND SHALL NOT call `browser_navigate` or `yt_search` before `yt_play`
+- AND SHALL follow up with `media_control(action='play_pause')` to start playback
+
+#### Scenario: No Duplicate URLs
+- GIVEN a video page is already open
+- WHEN the user says "play the video"
+- THEN the system SHALL use `media_control(action='play_pause')` instead of opening the URL again
 
 ### Requirement: LLM-Driven Intelligence (Integration)
 The system SHALL rely on the AI agent for smart behavior rather than hard-coded logic.
@@ -52,19 +95,24 @@ The system SHALL rely on the AI agent for smart behavior rather than hard-coded 
 #### Scenario: Multi-Step Reasoning
 - GIVEN the user says "play despacito by luis fonsi"
 - WHEN the agent processes this
-- THEN the AI SHALL call `browser_search` or construct a specific YouTube search URL including the creator name
-- AND SHALL let the user know the results are ready
+- THEN the AI SHALL call `yt_play` with the full query including creator name
+- AND SHALL call `media_control(action='play_pause')` to ensure playback
+- AND SHALL inform the user when complete
 
 ### Requirement: Tool Definitions (Integration)
-The system SHALL expose browser commands as OpenAI function-calling tools.
+The system SHALL expose browser commands as AI function-calling tools.
 #### Scenario: Tool Inventory
 The system SHALL register these browser tools:
 - `browser_navigate` — Open a URL (param: url)
 - `browser_search` — Web search (params: query, engine?)
-- `yt_play` — Open YouTube search results (param: query)
+- `yt_play` — Search YouTube and play first video (param: query)
+- `yt_search` — Open YouTube search results (param: query)
+- `yt_results` — Fetch top 10 YouTube results (param: query)
+- `media_control` — Keyboard simulation for browser/media (param: action)
 
 ### Non-Goals
 - The system will NOT install or manage browser drivers
-- The system will NOT automate clicks or page interactions
-- The system will NOT control browser tabs or windows
-- The system will NOT scrape page content
+- The system will NOT take screenshots or read page content (no Selenium/Playwright)
+- The system will NOT control browser tabs or windows beyond opening URLs
+- The system will NOT fill forms or interact with page elements
+- The system will NOT manage cookies or browser sessions

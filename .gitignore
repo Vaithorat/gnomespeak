@@ -50,3 +50,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# OpenCode skills (installed, not authored)
+.opencode/skills/

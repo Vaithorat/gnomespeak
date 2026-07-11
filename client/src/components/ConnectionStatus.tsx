@@ -5,13 +5,14 @@ import {ConnectionStatus as ConnectionStatusType} from '../types';
 interface Props {
   status: ConnectionStatusType;
   serverUrl: string;
+  compact?: boolean;
 }
 
 const STATUS_COLORS: Record<ConnectionStatusType, string> = {
-  connected: '#4CAF50',
-  connecting: '#FFC107',
-  disconnected: '#9E9E9E',
-  error: '#F44336',
+  connected: '#22C55E',
+  connecting: '#F59E0B',
+  disconnected: '#CBD5E1',
+  error: '#DC2626',
 };
 
 const STATUS_LABELS: Record<ConnectionStatusType, string> = {
@@ -21,12 +22,18 @@ const STATUS_LABELS: Record<ConnectionStatusType, string> = {
   error: 'Connection Error',
 };
 
-export const ConnectionStatus: React.FC<Props> = ({status, serverUrl}) => (
-  <View style={styles.container}>
-    <View style={[styles.dot, {backgroundColor: STATUS_COLORS[status]}]} />
-    <Text style={styles.text}>{STATUS_LABELS[status]}</Text>
-    {status === 'connected' ? (
-      <Text style={styles.url}>{serverUrl}</Text>
+export const ConnectionStatus: React.FC<Props> = ({status, serverUrl, compact}) => (
+  <View style={[styles.container, compact ? styles.containerCompact : null]}>
+    <View style={styles.dotWrap}>
+      <View style={[styles.dot, {backgroundColor: STATUS_COLORS[status]}]} />
+    </View>
+    {!compact ? (
+      <>
+        <Text style={styles.text}>{STATUS_LABELS[status]}</Text>
+        {status === 'connected' ? (
+          <Text style={styles.url}>{serverUrl}</Text>
+        ) : null}
+      </>
     ) : null}
   </View>
 );
@@ -38,19 +45,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
   },
+  containerCompact: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  dotWrap: {
+    padding: 4,
+  },
   dot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     marginRight: 8,
   },
   text: {
-    fontSize: 14,
-    color: '#333',
+    fontSize: 13,
+    color: '#475569',
   },
   url: {
-    fontSize: 12,
-    color: '#666',
+    fontSize: 11,
+    color: '#94A3B8',
     marginLeft: 8,
   },
 });
