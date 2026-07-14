@@ -4,16 +4,20 @@ context: |
   # VoiceTalk — Voice-Controlled PC Interface
 
   ## Overview
-  VoiceTalk lets users control a Windows PC using voice commands from an Android device. Speech is transcribed on-device, sent over WebSocket to a Python server, parsed by multi-provider AI agent (OpenAI, Gemini, OpenRouter, OpenCode with regex fallback), and executed as system commands via tool dispatch. The system supports full autonomy — executing complex multi-step tasks without user intervention.
+  VoiceTalk lets users control a Windows PC using voice commands from an Android device. Speech is transcribed on-device, sent over WebSocket to a Python server, parsed by multi-provider AI agent (OpenAI, Gemini, OpenRouter, OpenCode, Ollama with regex fallback), and executed as system commands via tool dispatch. The system supports full autonomy — executing complex multi-step tasks without user intervention.
 
   ## Architecture
   - **Client:** React Native (TypeScript) — Android only, on-device STT via `@react-native-voice/voice`
   - **Server:** Python 3.14+ — async WebSocket server using `websockets` library
-  - **Intent Parsing:** Multi-provider AI agent loop (OpenAI, Gemini, OpenRouter, OpenCode), 23 tool definitions
+  - **Intent Parsing:** Multi-provider AI agent loop (OpenAI, Gemini, OpenRouter, OpenCode, Ollama), 23 tool definitions
+  - **Streaming:** Sentence-level chunking via `parse_stream()` async generator, streamed over WebSocket
+  - **Safety:** Destructive operation interception (delete/move/copy/overwrite) with user confirmation
+  - **Environment Model:** Cached desktop files, installed apps, recent folders for AI context
   - **YouTube Search:** yt-dlp for reliable YouTube search (replaces HTML scraping)
   - **Keyboard Simulation:** pyautogui for media/browser control (play/pause, volume, fullscreen)
   - **Communication:** WebSocket over local network (`ws://`), JSON protocol with session tracking
   - **Handlers:** browser_control, file_ops, app_launcher, email_sender, bluetooth_control, media_player, media_control
+  - **Security:** Random master password (no hardcoded secrets), encrypted config, gitignored secrets, PowerShell injection prevention
 
   ## Tech Stack
   - Client: React Native 0.73, TypeScript 5.3, React Navigation 6
@@ -24,11 +28,13 @@ context: |
   ## Project Structure
   - `client/` — React Native Android app
   - `server/` — Python Windows server
-  - `openspec/` — Specifications (23 capabilities)
+  - `openspec/` — Specifications (26 capabilities)
 
   ## Communication Protocol
   Client → Server: { "type": "command", "text": "...", "api_key": "sk-...", "session_id": "..." }
-  Server → Client: { "type": "result", "success": bool, "message": "..." }
+  Server → Client: { "type": "stream_chunk", "content": "..." } (incremental text)
+  Server → Client: { "type": "stream_result", "success": bool, "message": "..." } (final)
+  Server → Client: { "type": "result", "success": bool, "message": "..." } (non-streaming)
   Server → Client: { "type": "question", "id": "q_...", "message": "...", "options": [...] }
   Client → Server: { "type": "answer", "id": "q_...", "text": "..." }
   Heartbeat: { "type": "ping" } → { "type": "pong" }
@@ -38,6 +44,12 @@ context: |
   send_email, create_file, create_folder, delete, copy, move,
   control_bluetooth, play_media, volume_up, volume_down, volume_mute, set_volume,
   media_control, get_system_info, ask_user
+
+  ## Security Model
+  - Random master password generated on first run (secrets.token_urlsafe(24)), stored in .master file
+  - config.json gitignored (never committed)
+  - No hardcoded passwords anywhere in codebase
+  - Destructive operations require user confirmation via SafetyChecker
 
 rules:
   proposal:

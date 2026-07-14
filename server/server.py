@@ -31,10 +31,10 @@ class VoiceTalkServer:
             except (ValueError, AttributeError):
                 pass
 
-    def setup(self, master_password: str):
-        self.config.unlock(master_password)
-        self.intent_parser = IntentParser(self.config)
+    def setup(self):
+        self.config.auto_unlock()
         self.executor = CommandExecutor(self.config)
+        self.intent_parser = IntentParser(self.config, env_model=self.executor.env_model)
         stored_key = self.config.get_secret("openai_api_key")
         if stored_key:
             print("Found stored API key in config")
@@ -93,16 +93,41 @@ class VoiceTalkServer:
             ask_callback = (
                 lambda q, opts: self._send_question(q, opts)
             )
-            result = await self.intent_parser.parse(
-                text,
-                executor=self.executor,
-                ask_callback=ask_callback,
-                api_key=api_key,
-                provider=provider,
-                session_id=session_id or None,
-            )
-            result["type"] = "result"
-            await websocket.send(json.dumps(result))
+
+            await self.executor.env_model.refresh_if_stale()
+
+            full_response = ""
+            try:
+                async for chunk in self.intent_parser.parse_stream(
+                    text,
+                    executor=self.executor,
+                    ask_callback=ask_callback,
+                    api_key=api_key,
+                    provider=provider,
+                    session_id=session_id or None,
+                ):
+                    if chunk["type"] == "chunk":
+                        full_response += chunk["content"]
+                        await websocket.send(json.dumps({
+                            "type": "stream_chunk",
+                            "content": chunk["content"],
+                        }))
+                    elif chunk["type"] == "tool_result":
+                        pass
+                    elif chunk["type"] == "final":
+                        result = chunk["result"]
+                        final_message = full_response if full_response else result.get("message", "")
+                        await websocket.send(json.dumps({
+                            "type": "stream_result",
+                            "success": result.get("success", True),
+                            "message": final_message,
+                        }))
+            except Exception as e:
+                await websocket.send(json.dumps({
+                    "type": "stream_result",
+                    "success": False,
+                    "message": f"Error: {str(e)}",
+                }))
 
     async def _handle_answer(self, data: dict):
         q_id = data.get("id", "")
@@ -124,6 +149,7 @@ class VoiceTalkServer:
 
     async def run_async(self):
         self.shutdown_event.clear()
+        await self.executor.initialize()
         async with websockets.serve(
             self.handle_client,
             self.config.host,
@@ -171,7 +197,7 @@ def prompt_setup(server: VoiceTalkServer):
 
 if __name__ == "__main__":
     server = VoiceTalkServer()
-    server.setup("voicetalk")
+    server.setup()
     prompt_setup(server)
     try:
         server.run()

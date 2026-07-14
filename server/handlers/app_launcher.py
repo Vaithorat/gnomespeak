@@ -1,9 +1,11 @@
 import os
+import subprocess
 from pathlib import Path
 
 
 class AppLauncher:
-    def __init__(self):
+    def __init__(self, env_model=None):
+        self.env_model = env_model
         self.start_menu_dirs = self._get_start_menu_dirs()
         self.common_dirs = [
             Path("C:\\Program Files"),
@@ -64,6 +66,11 @@ class AppLauncher:
     def find_app(self, name: str):
         name_lower = name.lower().strip()
 
+        if self.env_model:
+            cached = self.env_model.get_app_path(name_lower)
+            if cached:
+                return cached
+
         candidate_names = [name_lower]
         if name_lower in self.aliases:
             candidate_names = self.aliases[name_lower]
@@ -83,9 +90,32 @@ class AppLauncher:
                 candidate_names.append(without_article)
 
         for try_name in candidate_names:
+            result = self._search_with_powershell(try_name)
+            if result:
+                return result
             result = self._search_name(try_name)
             if result:
                 return result
+        return None
+
+    def _search_with_powershell(self, name: str):
+        try:
+            safe_name = name.replace("'", "''")
+            ps_cmd = (
+                f"Get-StartApps | Where-Object {{$_.Name -like '*{safe_name}*'}} "
+                f"| Select-Object -First 1 -ExpandProperty AppId"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                capture_output=True, text=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                app_id = result.stdout.strip()
+                if os.path.exists(app_id):
+                    return app_id
+        except Exception:
+            pass
         return None
 
     def _search_name(self, name: str):

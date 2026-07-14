@@ -79,6 +79,9 @@ export const HomeScreen: React.FC = () => {
   const [appMode, setAppMode] = useState<AppMode>('voice');
   const convModeRef = useRef(false);
   const chatModeRef = useRef(false);
+  const streamingTextRef = useRef('');
+  const streamingLogIdRef = useRef<string | null>(null);
+  const streamingChatMsgIdRef = useRef<string | null>(null);
 
   // Chat mode state
   const [chatMessages, setChatMessages] = useState<ConversationMessage[]>([]);
@@ -121,6 +124,131 @@ export const HomeScreen: React.FC = () => {
 
   useEffect(() => {
     wsService.onStatusChange(setConnectionStatus);
+
+    wsService.onStreamChunk(chunk => {
+      streamingTextRef.current += chunk.content;
+      const currentText = streamingTextRef.current;
+
+      if (convModeRef.current) {
+        convMode.handleStreamChunk(chunk.content);
+      } else if (chatModeRef.current) {
+        const msgId = streamingChatMsgIdRef.current;
+        if (msgId) {
+          setChatMessages(prev => {
+            const updated = [...prev];
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i].id === msgId) {
+                updated[i] = {...updated[i], text: currentText};
+                break;
+              }
+            }
+            return updated;
+          });
+        } else {
+          const newId = `ai_${Date.now()}`;
+          streamingChatMsgIdRef.current = newId;
+          setChatMessages(prev => [
+            ...prev,
+            {
+              id: newId,
+              role: 'assistant',
+              text: currentText,
+              timestamp: Date.now(),
+              isFinal: false,
+            },
+          ]);
+        }
+      } else {
+        const logId = streamingLogIdRef.current;
+        if (logId) {
+          setLogEntries(prev => {
+            const updated = [...prev];
+            for (let i = 0; i < updated.length; i++) {
+              if (updated[i].id === logId) {
+                updated[i] = {...updated[i], result: currentText};
+                break;
+              }
+            }
+            return updated;
+          });
+          setLastResult(currentText);
+        }
+      }
+    });
+
+    wsService.onStreamResult(result => {
+      const finalText = streamingTextRef.current || result.message;
+      const logId = streamingLogIdRef.current;
+      const chatMsgId = streamingChatMsgIdRef.current;
+      streamingTextRef.current = '';
+      streamingLogIdRef.current = null;
+      streamingChatMsgIdRef.current = null;
+
+      if (convModeRef.current) {
+        convMode.handleStreamResult(finalText, result.success);
+      } else if (chatModeRef.current) {
+        if (chatMsgId) {
+          setChatMessages(prev => {
+            const updated = [...prev];
+            for (let i = updated.length - 1; i >= 0; i--) {
+              if (updated[i].id === chatMsgId) {
+                updated[i] = {...updated[i], text: finalText, isFinal: true};
+                break;
+              }
+            }
+            return updated;
+          });
+        } else {
+          setChatMessages(prev => [
+            ...prev,
+            {
+              id: `ai_${Date.now()}`,
+              role: 'assistant',
+              text: finalText,
+              timestamp: Date.now(),
+              isFinal: true,
+            },
+          ]);
+        }
+        setChatWaiting(false);
+      } else {
+        setLastResult(finalText);
+        if (result.success) {
+          setPipelineStep('done');
+        } else {
+          setPipelineStep('error');
+        }
+        Animated.sequence([
+          Animated.timing(statusAnim, {toValue: 1, duration: 200, useNativeDriver: true}),
+        ]).start();
+        if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+        doneTimerRef.current = setTimeout(() => setPipelineStep('idle'), 5000);
+        if (logId) {
+          setLogEntries(prev => {
+            const updated = [...prev];
+            for (let i = 0; i < updated.length; i++) {
+              if (updated[i].id === logId) {
+                updated[i] = {...updated[i], result: finalText, success: result.success};
+                break;
+              }
+            }
+            return limitEntries(updated);
+          });
+        } else {
+          setLogEntries(prev => {
+            for (let i = 0; i < prev.length; i++) {
+              if (prev[i].result === 'Sending...') {
+                const updated = [...prev];
+                updated[i] = {...updated[i], result: finalText, success: result.success};
+                return limitEntries(updated);
+              }
+            }
+            return limitEntries(prev);
+          });
+        }
+      }
+    });
+
     wsService.onResult(result => {
       if (convModeRef.current) {
         convMode.handleStreamResult(result.message, result.success);
@@ -206,8 +334,11 @@ export const HomeScreen: React.FC = () => {
     }
     setPipelineStep('sending');
     refreshSessionTimer();
+    streamingTextRef.current = '';
+    const entryId = Date.now().toString();
+    streamingLogIdRef.current = entryId;
     const entry: CommandLogEntry = {
-      id: Date.now().toString(),
+      id: entryId,
       transcript: text,
       result: 'Sending...',
       success: true,
@@ -261,6 +392,8 @@ export const HomeScreen: React.FC = () => {
     if (!text || chatWaiting) return;
 
     refreshSessionTimer();
+    streamingTextRef.current = '';
+    streamingChatMsgIdRef.current = null;
     setChatMessages(prev => [
       ...prev,
       {

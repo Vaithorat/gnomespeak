@@ -32,6 +32,8 @@ export function useConversationMode() {
   const isListeningRef = useRef(false);
   const pendingQuestionRef = useRef<{id: string} | null>(null);
   const isActiveRef = useRef(false);
+  const streamingTextRef = useRef('');
+  const streamingMsgIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -140,6 +142,8 @@ export function useConversationMode() {
     setLiveText('');
     pendingQuestionRef.current = null;
     transcriptRef.current = '';
+    streamingTextRef.current = '';
+    streamingMsgIdRef.current = null;
     setIsActive(true);
     isActiveRef.current = true;
     try {
@@ -159,14 +163,63 @@ export function useConversationMode() {
     await cleanupVoice();
   }, [finalizeTranscript, cleanupVoice]);
 
-  const handleStreamResult = useCallback((message: string, success: boolean) => {
-    const msg: ConversationMessage = {
-      id: `ai_${Date.now()}_${++msgCounter}`,
-      role: 'assistant',
-      text: message,
-      timestamp: Date.now(),
-    };
-    setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), msg]);
+  const handleStreamChunk = useCallback((content: string) => {
+    streamingTextRef.current += content;
+    const currentText = streamingTextRef.current;
+    const msgId = streamingMsgIdRef.current;
+
+    if (msgId) {
+      setMessages(prev => {
+        const updated = [...prev];
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].id === msgId) {
+            updated[i] = {...updated[i], text: currentText};
+            break;
+          }
+        }
+        return updated;
+      });
+    } else {
+      const newId = `ai_${Date.now()}_${++msgCounter}`;
+      streamingMsgIdRef.current = newId;
+      const msg: ConversationMessage = {
+        id: newId,
+        role: 'assistant',
+        text: currentText,
+        timestamp: Date.now(),
+      };
+      setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), msg]);
+    }
+  }, []);
+
+  const handleStreamResult = useCallback((_message: string, success: boolean) => {
+    const finalText = streamingTextRef.current || "Done.";
+    const msgId = streamingMsgIdRef.current;
+
+    if (msgId) {
+      setMessages(prev => {
+        const updated = [...prev];
+        for (let i = updated.length - 1; i >= 0; i--) {
+          if (updated[i].id === msgId) {
+            updated[i] = {...updated[i], text: finalText};
+            break;
+          }
+        }
+        return updated;
+      });
+    } else {
+      const msg: ConversationMessage = {
+        id: `ai_${Date.now()}_${++msgCounter}`,
+        role: 'assistant',
+        text: finalText,
+        timestamp: Date.now(),
+      };
+      setMessages(prev => [...prev.slice(-MAX_MESSAGES + 1), msg]);
+    }
+
+    streamingTextRef.current = '';
+    streamingMsgIdRef.current = null;
+
     if (isActiveRef.current) {
       restartListening();
     }
@@ -192,6 +245,7 @@ export function useConversationMode() {
     liveText,
     start,
     stop,
+    handleStreamChunk,
     handleStreamResult,
     handleStreamQuestion,
   };

@@ -27,12 +27,20 @@ The Android client SHALL persist user settings across app restarts.
 
 ### Requirement: Server-Side Encrypted Config
 The Windows server SHALL encrypt secrets at rest using Fernet symmetric encryption.
-#### Scenario: Auto-Load OpenCode Key
+#### Scenario: Auto-Unlock on Startup
 - GIVEN the server starts
-- WHEN an OpenCode auth file exists at `~/.local/share/opencode/auth.json`
-- THEN the system SHALL read the "opencode-go" or "opencode" API key from it
-- AND SHALL store it in the encrypted config automatically
-- AND SHALL NOT prompt the user for an API key
+- WHEN a `.master` file exists next to `config.json`
+- THEN the system SHALL read the master password from `.master`
+- AND SHALL derive the decryption key from the stored salt and password
+- AND SHALL decrypt the secrets for use
+- AND SHALL NOT prompt the user for a password
+
+#### Scenario: First Run — Generate Password
+- GIVEN the server starts for the first time (no `.master` file)
+- WHEN initialization occurs
+- THEN the system SHALL generate a random password via `secrets.token_urlsafe(24)`
+- AND SHALL store it in `.master`
+- AND SHALL create the encrypted config with this password
 
 #### Scenario: Client-Provided Key
 - GIVEN a client connects with a command
@@ -75,6 +83,15 @@ The server SHALL persist encrypted configuration to disk.
 - WHEN the user completes configuration
 - THEN the system SHALL write config.json with the encrypted blob and salt
 - AND SHALL not store any secrets in plaintext
+
+### Requirement: Secrets Excluded from Version Control
+The server SHALL exclude sensitive files from git tracking.
+#### Scenario: .gitignore Configuration
+- GIVEN the project is committed to git
+- WHEN `.gitignore` is inspected
+- THEN `server/config.json` SHALL be listed as ignored
+- AND `.master` SHALL be listed as ignored
+- AND no plaintext secrets SHALL be committed
 
 ### Requirement: API Key Masking
 The Android client SHALL obscure the API key in the UI.

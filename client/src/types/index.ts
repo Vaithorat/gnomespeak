@@ -20,6 +20,17 @@ export interface ResultMessage {
   message: string;
 }
 
+export interface StreamChunkMessage {
+  type: 'stream_chunk';
+  content: string;
+}
+
+export interface StreamResultMessage {
+  type: 'stream_result';
+  success: boolean;
+  message: string;
+}
+
 export interface QuestionMessage {
   type: 'question';
   id: string;
@@ -33,7 +44,7 @@ export interface AnswerMessage {
   text: string;
 }
 
-export type ServerMessage = ResultMessage | QuestionMessage;
+export type ServerMessage = ResultMessage | StreamChunkMessage | StreamResultMessage | QuestionMessage;
 
 export interface CommandLogEntry {
   id: string;

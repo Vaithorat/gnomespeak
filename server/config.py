@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 from pathlib import Path
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
@@ -7,12 +8,10 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
 
 
-DEFAULT_MASTER_PASSWORD = "voicetalk"
-
-
 class Config:
     def __init__(self, config_path="config.json"):
         self.config_path = Path(config_path)
+        self._master_path = self.config_path.parent / ".master"
         self.data = self._load_or_create()
         self._fernet = None
 
@@ -36,8 +35,16 @@ class Config:
             "salt": None,
         }
 
+    def _get_or_create_master_password(self) -> str:
+        if self._master_path.exists():
+            return self._master_path.read_text().strip()
+        pw = secrets.token_urlsafe(24)
+        self._master_path.write_text(pw)
+        return pw
+
     def auto_unlock(self):
-        self.unlock(DEFAULT_MASTER_PASSWORD)
+        pw = self._get_or_create_master_password()
+        self.unlock(pw)
 
     def unlock(self, master_password: str):
         salt = (

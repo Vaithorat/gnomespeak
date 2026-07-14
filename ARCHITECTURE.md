@@ -45,6 +45,8 @@ VoiceTalk is a voice-controlled interface between an Android phone and a Windows
 |-----------|------|---------|
 | Client → Server | `command` | Voice transcript + API key + provider + session_id |
 | Server → Client | `result` | Command execution result (`success`, `message`) |
+| Server → Client | `stream_chunk` | Incremental AI response text (`content`) |
+| Server → Client | `stream_result` | Final result after streaming completes (`success`, `message`) |
 | Server → Client | `question` | Agent asks user for clarification (`id`, `message`, `options`) |
 | Client → Server | `answer` | User's response to agent clarification |
 | Client → Server | `ping` | Heartbeat keep-alive (30s interval) |
@@ -54,14 +56,17 @@ VoiceTalk is a voice-controlled interface between an Android phone and a Windows
 
 ```
 User speaks → on-device STT → WebSocket command (with session_id)
-  → IntentParser.parse()
-    → [OpenAI] Agent loop — function calling, max 10 iterations
-    → [Gemini] Agent loop — native function calling, max 5 iterations
-    → [OpenCode/OpenRouter] Agent loop — OpenAI-compatible API
+  → IntentParser.parse_stream() (async generator)
+    → [OpenAI] Agent loop — function calling, max 10 iterations, streaming
+    → [Gemini] Agent loop — native function calling, max 5 iterations, streaming
+    → [OpenCode/OpenRouter] Agent loop — OpenAI-compatible API, streaming
     → [No API key] Regex fallback
+  → Yields stream_chunk → Server sends incremental text to client
   → CommandExecutor.execute_tool() (async)
+    → SafetyChecker intercepts destructive tools (delete/move/copy/overwrite)
+    → If confirmation required → ask_user flow → user confirms/denies
   → Handler executes → result returned to client
-  → Session history stored for multi-turn context
+  → stream_result sent → Session history stored for multi-turn context
 ```
 
 ### Question/Answer Flow
@@ -76,10 +81,10 @@ Agent calls ask_user() → server sends {"type": "question", ...}
 ## Server Components
 
 ### config.py
-Manages encrypted secrets using Fernet (AES-128-CBC). Master password derived via PBKDF2-HMAC-SHA256 (600k iterations). Auto-unlocks with default password `voicetalk` — no manual password entry required.
+Manages encrypted secrets using Fernet (AES-128-CBC). Master password generated randomly on first run via `secrets.token_urlsafe(24)` and stored in `.master` file. Auto-unlocks on subsequent starts by reading `.master` — no manual password entry required.
 
 ### intent_parser.py
-Core AI integration. Supports 4 providers:
+Core AI integration. Supports 5 providers with streaming:
 
 | Provider | SDK | Agent Loop | Native Function Calling |
 |----------|-----|------------|------------------------|
@@ -87,13 +92,16 @@ Core AI integration. Supports 4 providers:
 | Gemini | `google.genai` | Up to 5 iterations | Yes (native FunctionDeclaration) |
 | OpenCode | `openai` (custom base URL) | Up to 10 iterations | Yes |
 | OpenRouter | `openai` (custom base URL) | Up to 10 iterations | Yes |
+| Ollama | `openai` (localhost:11434) | Up to 10 iterations | Yes |
+
+**Streaming:** `parse_stream()` is an async generator yielding `{type: "chunk", content}` and `{type: "tool_result", ...}` messages. Sentence-level chunking via regex (`[.!?]\s|\n`), max 500 chars per chunk. OpenAI uses `stream=True` + `stream_options`. Gemini appends user message outside tool loop.
 
 **Session management:** Conversations tracked by `session_id`. Max 50 sessions, max 100 messages per session. LRU eviction when limit exceeded.
 
-**System prompt:** Enforces full PC autonomy — AI never asks user to click/tap. English-only responses. Error recovery protocol. YouTube single-tab rules.
+**System prompt:** Enforces full PC autonomy — AI never asks user to click/tap. English-only responses. Error recovery protocol. YouTube single-tab rules. Environment model context injected (desktop files, installed apps, recent folders).
 
 ### command_executor.py
-Async tool dispatch. Routes 23 tool names to 7 handler modules. Includes safe `int()` conversion for volume level.
+Async tool dispatch. Routes 23 tool names to 7 handler modules. Includes SafetyChecker (intercepts destructive operations for user confirmation) and EnvironmentModel (cached desktop/apps/folders). File operations refresh affected folders in the environment cache. Includes safe `int()` conversion for volume level.
 
 ### Handlers
 
@@ -101,7 +109,7 @@ Async tool dispatch. Routes 23 tool names to 7 handler modules. Includes safe `i
 |---------|-------|---------|
 | `browser_control.py` | `browser_navigate`, `browser_search`, `yt_play`, `yt_search`, `yt_results` | **Playwright** (async Chromium) for YouTube; `webbrowser` for general browsing; **yt-dlp** for search |
 | `file_ops.py` | `navigate`, `list_dir`, `create_file`, `create_folder`, `delete`, `copy`, `move` | Python stdlib (`os`, `shutil`, `pathlib`) |
-| `app_launcher.py` | `open_app` | Start Menu scan → common dirs → `os.startfile()` |
+| `app_launcher.py` | `open_app` | PowerShell `Get-StartApps` → Start Menu scan → common dirs → `os.startfile()` |
 | `email_sender.py` | `send_email` | `smtplib` with TLS |
 | `bluetooth_control.py` | `control_bluetooth` (on/off/scan/status, connect/disconnect with winrt) | PowerShell |
 | `media_player.py` | `play_media`, `volume_up`, `volume_down`, `volume_mute`, `set_volume` | `pycaw` (set_volume), `os.startfile`, PowerShell |
@@ -112,7 +120,7 @@ Async tool dispatch. Routes 23 tool names to 7 handler modules. Includes safe `i
 The browser handler uses a hybrid approach:
 
 - **YouTube playback** (`yt_play`): Uses Playwright's async Chromium to navigate to the video page and auto-play via JavaScript `v.play()`. Single persistent browser instance. All navigation happens in one tab.
-- **General browsing** (`browser_navigate`, `browser_search`): Uses Python's `webbrowser.open()` to open URLs in the user's default browser.
+- **General browsing** (`browser_navigate`, `browser_search`): Uses Playwright to navigate in the persistent browser instance.
 - **YouTube search data** (`yt_results`): Uses `yt-dlp` CLI for fast, reliable search without browser overhead.
 
 ## Client Components
@@ -172,9 +180,59 @@ The browser handler uses a hybrid approach:
 
 ## Security
 
-- API keys encrypted at rest using Fernet (PBKDF2-HMAC-SHA256, 600k iterations)
-- Auto-unlocks with default password — no manual entry required
-- WebSocket runs on local network only (no internet exposure)
-- Session limit (50 sessions, 100 messages each) prevents memory exhaustion
-- `google.genai` import wrapped in try/except — server starts without Gemini SDK
-- Volume level input safely converted with try/except
+- **Random master password** — Generated on first run via `secrets.token_urlsafe(24)`, stored in `.master` file. No hardcoded passwords.
+- **Encrypted config** — API keys and SMTP credentials encrypted at rest using Fernet (PBKDF2-HMAC-SHA256, 600k iterations)
+- **Auto-unlock** — Reads `.master` file on startup — no manual password entry required
+- **`config.json` gitignored** — Encrypted secrets file excluded from version control
+- **WebSocket on local network only** — No internet exposure (binds `0.0.0.0:8765`)
+- **Session limits** — Max 50 sessions, 100 messages each, LRU eviction prevents memory exhaustion
+- **Safe imports** — `google.genai` wrapped in try/except — server starts without Gemini SDK
+- **Safe volume conversion** — `int()` wrapped in try/except ValueError/TypeError
+- **PowerShell injection prevention** — App names escaped with single-quote doubling before embedding in PS commands
+
+## Safety System
+
+`server/safety.py` provides destructive operation protection:
+
+- **Intercepted tools:** `delete`, `move`, `copy`, `create_file` (when overwriting)
+- **Flow:** SafetyChecker.check() → ask_user() → user confirms/denies → operation proceeds or is cancelled
+- **Safe default:** On exception or timeout, destructive operations are denied (not approved)
+- **Configurable:** `SafetyChecker.enabled` flag can disable checks (used in tests)
+
+## Environment Model
+
+`server/env_model.py` provides cached system awareness:
+
+- **Desktop files** — Up to 30 filenames and types from `~/Desktop`
+- **Installed apps** — Up to 50 app names from Start Menu (`.lnk`, `.exe` files)
+- **Recent folders** — Up to 10 recently browsed folder paths with item counts
+- **Lazy refresh** — Refreshes on access if stale (>15 minutes since last refresh)
+- **Background refresh** — Full refresh runs as asyncio task (non-blocking)
+- **Context injection** — `build_context_prompt()` output appended to system prompt on every AI request
+- **Folder updates** — File operations refresh affected folders via `refresh_folder()`
+
+## Data Privacy
+
+`server/redactor.py` (planned) sanitizes tool results before AI API calls:
+
+| Privacy Level | Behavior |
+|---------------|----------|
+| `full` | No redaction — all data sent to AI provider |
+| `smart` | Redacts file contents, email bodies; keeps paths/URLs |
+| `strict` | Redacts all file paths, directory listings, URLs, device names |
+
+**Redaction rules:**
+- File paths → `[file:name.ext]`
+- Directory listings → `[N items: X files, Y folders]`
+- Browser URLs → `[opened: domain.com]`
+- Email bodies → `[email body redacted]`
+- System info → OS/arch only, no Bluetooth device names
+
+## Device Pairing (Planned)
+
+`server/pairing.py` — TeamViewer-style secure pairing:
+
+- **First connection:** 6-digit code displayed on Windows GUI, entered on phone
+- **Subsequent connections:** Trusted device token (`vt_` prefix) auto-authenticates
+- **Token storage:** Encrypted in config via Fernet
+- **Rate limiting:** 5 attempts per code, code expires after 5 minutes

@@ -439,13 +439,17 @@ OPENROUTER_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
 MAX_SESSIONS = 50
 MAX_SESSION_MESSAGES = 100
 
+SENTENCE_ENDINGS = re.compile(r'[.!?]\s|\n')
+MAX_CHUNK_CHARS = 500
+
 
 class IntentParser:
-    def __init__(self, config):
+    def __init__(self, config, env_model=None):
         self.config = config
         self.default_client = None
         self.default_provider = None
         self.sessions: dict[str, list[dict]] = {}
+        self.env_model = env_model
         self._init_default()
 
     def _init_default(self):
@@ -486,6 +490,14 @@ class IntentParser:
             return ("openai", AsyncOpenAI(api_key=api_key, base_url=OPENROUTER_BASE_URL))
         return None, None
 
+    def _get_system_prompt_with_env(self) -> str:
+        prompt = SYSTEM_PROMPT
+        if self.env_model:
+            env_ctx = self.env_model.build_context_prompt()
+            if env_ctx and env_ctx != "## Current Environment":
+                prompt += "\n\n" + env_ctx
+        return prompt
+
     async def parse(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None) -> dict:
         actual_provider = provider or self.default_provider
         if not actual_provider:
@@ -515,9 +527,179 @@ class IntentParser:
         command = self._parse_with_rules(text)
         return await executor.execute(command)
 
-    async def _parse_with_gemini(self, text: str, executor, client, ask_callback=None, session_id=None) -> dict:
+    async def parse_stream(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None):
+        actual_provider = provider or self.default_provider
+        if not actual_provider:
+            command = self._parse_with_rules(text)
+            result = await executor.execute(command)
+            yield {"type": "final", "result": result}
+            return
+
+        actual_client = self.default_client
+        client_type = actual_provider
+
+        if api_key and provider:
+            result = self._make_client(provider, api_key)
+            if result:
+                client_type, actual_client = result
+
+        if actual_client:
+            try:
+                if client_type == "gemini":
+                    async for chunk in self._parse_with_gemini_stream(text, executor, actual_client, ask_callback, session_id):
+                        yield chunk
+                else:
+                    async for chunk in self._parse_with_agent_stream(text, executor, ask_callback, actual_client, actual_provider, session_id):
+                        yield chunk
+                return
+            except Exception as e:
+                yield {"type": "final", "result": {"success": False, "message": f"Agent error: {str(e)}"}}
+                return
+
+        command = self._parse_with_rules(text)
+        result = await executor.execute(command)
+        yield {"type": "final", "result": result}
+
+    async def _parse_with_agent_stream(
+        self, text: str, executor, ask_callback, client, provider="openai", session_id=None
+    ):
+        model = "gpt-3.5-turbo"
+        if provider == "opencode":
+            model = OPENGODE_MODEL
+        elif provider == "openrouter":
+            model = OPENROUTER_MODEL
+
+        system_prompt = self._get_system_prompt_with_env()
+        full_response = ""
+
+        if session_id and session_id in self.sessions:
+            messages = list(self.sessions[session_id])
+            messages.append({"role": "user", "content": text})
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ]
+
+        full_response = ""
+        for _ in range(10):
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=TOOLS,
+                tool_choice="auto",
+                temperature=0.1,
+                max_tokens=1024,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+
+            text_buffer = ""
+            tool_calls_data = []
+            finish_reason = None
+            usage = None
+
+            async for chunk in response:
+                if hasattr(chunk, "usage") and chunk.usage:
+                    usage = chunk.usage
+
+                if not chunk.choices:
+                    continue
+
+                choice = chunk.choices[0]
+                delta = choice.delta
+                finish_reason = choice.finish_reason
+
+                if delta and delta.content:
+                    text_buffer += delta.content
+                    full_response += delta.content
+                    while True:
+                        split_pos = -1
+                        for ending_match in SENTENCE_ENDINGS.finditer(text_buffer):
+                            split_pos = ending_match.end()
+                        if split_pos > 0 and split_pos <= MAX_CHUNK_CHARS:
+                            yield {"type": "chunk", "content": text_buffer[:split_pos]}
+                            text_buffer = text_buffer[split_pos:]
+                        elif len(text_buffer) >= MAX_CHUNK_CHARS:
+                            space_pos = text_buffer.rfind(" ", 0, MAX_CHUNK_CHARS)
+                            if space_pos > 0:
+                                yield {"type": "chunk", "content": text_buffer[:space_pos + 1]}
+                                text_buffer = text_buffer[space_pos + 1:]
+                            else:
+                                yield {"type": "chunk", "content": text_buffer[:MAX_CHUNK_CHARS]}
+                                text_buffer = text_buffer[MAX_CHUNK_CHARS:]
+                        else:
+                            break
+
+                if delta and delta.tool_calls:
+                    for tc_delta in delta.tool_calls:
+                        idx = tc_delta.index
+                        while len(tool_calls_data) <= idx:
+                            tool_calls_data.append({"id": "", "name": "", "arguments": ""})
+                        if tc_delta.id:
+                            tool_calls_data[idx]["id"] = tc_delta.id
+                        if tc_delta.function:
+                            if tc_delta.function.name:
+                                tool_calls_data[idx]["name"] = tc_delta.function.name
+                            if tc_delta.function.arguments:
+                                tool_calls_data[idx]["arguments"] += tc_delta.function.arguments
+
+            if text_buffer:
+                yield {"type": "chunk", "content": text_buffer}
+
+            if finish_reason == "stop":
+                if session_id:
+                    self._store_session_stream(session_id, messages, text, full_response)
+                yield {"type": "final", "result": {"success": True, "message": full_response or "Done."}}
+                return
+
+            if tool_calls_data:
+                messages.append({"role": "assistant", "content": None, "tool_calls": [
+                    {"id": tc["id"], "type": "function", "function": {"name": tc["name"], "arguments": tc["arguments"]}}
+                    for tc in tool_calls_data if tc["name"]
+                ]})
+
+                for tc in tool_calls_data:
+                    if not tc["name"]:
+                        continue
+                    try:
+                        args = json.loads(tc["arguments"]) if tc["arguments"] else {}
+                    except json.JSONDecodeError:
+                        args = {}
+
+                    if tc["name"] == "ask_user" and ask_callback:
+                        result = await ask_callback(
+                            args.get("question", ""),
+                            args.get("options", []),
+                        )
+                    elif executor:
+                        result = await executor.execute_tool(tc["name"], args, ask_callback)
+                    else:
+                        result = {"success": False, "message": "No executor available"}
+
+                    yield {"type": "tool_result", "tool": tc["name"], "result": result}
+
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": json.dumps(result),
+                    })
+
+                tool_calls_data = []
+                continue
+
+            break
+
+        if session_id:
+            self._store_session_stream(session_id, messages, text, full_response)
+        yield {"type": "final", "result": {"success": False, "message": "Agent reached maximum iterations."}}
+
+    async def _parse_with_gemini_stream(self, text: str, executor, client, ask_callback=None, session_id=None):
         if genai is None:
-            return {"success": False, "message": "Gemini not available. Install google-genai."}
+            yield {"type": "final", "result": {"success": False, "message": "Gemini not available. Install google-genai."}}
+            return
+
+        system_prompt = self._get_system_prompt_with_env()
 
         gemini_tools = []
         for t in TOOLS:
@@ -546,7 +728,7 @@ class IntentParser:
 
         if session_id and session_id in self.sessions:
             history = self.sessions[session_id]
-            contents = [{"role": "user", "parts": [{"text": SYSTEM_PROMPT}]}]
+            contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
             contents.append({"role": "model", "parts": [{"text": "Understood. I will follow all rules including English-only responses, full PC control, and single-tab browser execution."}]})
             for msg in history:
                 role = msg.get("role", "user")
@@ -561,7 +743,149 @@ class IntentParser:
             full_contents = contents
         else:
             full_contents = [
-                {"role": "user", "parts": [{"text": f"{SYSTEM_PROMPT}\n\nUser said: {text}"}]},
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\nUser said: {text}"}]},
+            ]
+
+        for iteration in range(5):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=GEMINI_MODEL,
+                    contents=full_contents,
+                    config=genai.types.GenerateContentConfig(
+                        tools=gemini_tools,
+                        temperature=0.1,
+                    ),
+                )
+            except Exception as e:
+                yield {"type": "final", "result": {"success": False, "message": f"Gemini error: {str(e)}"}}
+                return
+
+            if not response.candidates:
+                yield {"type": "final", "result": {"success": False, "message": "Gemini returned no response"}}
+                return
+
+            candidate = response.candidates[0]
+            if candidate.content is None:
+                yield {"type": "final", "result": {"success": False, "message": "Gemini returned empty content"}}
+                return
+
+            parts = candidate.content.parts
+            if not parts:
+                yield {"type": "final", "result": {"success": False, "message": "Gemini returned no parts"}}
+                return
+
+            has_function_call = False
+            text_buffer = ""
+
+            for part in parts:
+                if hasattr(part, "function_call") and part.function_call:
+                    has_function_call = True
+                    fc = part.function_call
+                    name = fc.name
+                    args = dict(fc.args) if fc.args else {}
+
+                    if name == "ask_user" and ask_callback:
+                        result = await ask_callback(
+                            args.get("question", ""),
+                            args.get("options", []),
+                        )
+                    elif executor:
+                        result = await executor.execute_tool(name, args, ask_callback)
+                    else:
+                        result = {"success": False, "message": "No executor available"}
+
+                    yield {"type": "tool_result", "tool": name, "result": result}
+
+                    full_contents.append({"role": "model", "parts": [{"function_call": fc}]})
+                    full_contents.append({"role": "user", "parts": [{"function_response": genai.types.FunctionResponse(
+                        name=name,
+                        response=result,
+                    )}]})
+                else:
+                    text_buffer += part.text or ""
+
+            if session_id and has_function_call:
+                if session_id not in self.sessions:
+                    self.sessions[session_id] = []
+                self.sessions[session_id].append({"role": "user", "content": text})
+                self.sessions[session_id].append({"role": "assistant", "content": f"Called tool → {text_buffer[:200]}"})
+                self._store_session(session_id, self.sessions[session_id])
+
+            if text_buffer:
+                words = text_buffer.split(" ")
+                chunk = ""
+                for word in words:
+                    test = chunk + word + " "
+                    if len(test) >= MAX_CHUNK_CHARS:
+                        if chunk:
+                            yield {"type": "chunk", "content": chunk}
+                        chunk = word + " "
+                    else:
+                        chunk = test
+                if chunk:
+                    yield {"type": "chunk", "content": chunk}
+
+            if not has_function_call:
+                if session_id:
+                    if session_id not in self.sessions:
+                        self.sessions[session_id] = []
+                    self.sessions[session_id].append({"role": "user", "content": text})
+                    self.sessions[session_id].append({"role": "assistant", "content": text_buffer or "Done."})
+                    self._store_session(session_id, self.sessions[session_id])
+                yield {"type": "final", "result": {"success": True, "message": text_buffer or "Done."}}
+                return
+
+        yield {"type": "final", "result": {"success": False, "message": "Gemini reached maximum iterations."}}
+
+    async def _parse_with_gemini(self, text: str, executor, client, ask_callback=None, session_id=None) -> dict:
+        if genai is None:
+            return {"success": False, "message": "Gemini not available. Install google-genai."}
+
+        system_prompt = self._get_system_prompt_with_env()
+
+        gemini_tools = []
+        for t in TOOLS:
+            fn = t["function"]
+            props = fn["parameters"].get("properties", {})
+            required = fn["parameters"].get("required", [])
+            schema_props = {}
+            for pname, pdef in props.items():
+                sp = {"type": pdef.get("type", "string")}
+                if "description" in pdef:
+                    sp["description"] = pdef["description"]
+                if "enum" in pdef:
+                    sp["enum"] = pdef["enum"]
+                schema_props[pname] = sp
+            gemini_tools.append(genai.types.Tool(
+                function_declarations=[genai.types.FunctionDeclaration(
+                    name=fn["name"],
+                    description=fn["description"],
+                    parameters=genai.types.Schema(
+                        type="OBJECT",
+                        properties=schema_props,
+                        required=required,
+                    ),
+                )]
+            ))
+
+        if session_id and session_id in self.sessions:
+            history = self.sessions[session_id]
+            contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
+            contents.append({"role": "model", "parts": [{"text": "Understood. I will follow all rules including English-only responses, full PC control, and single-tab browser execution."}]})
+            for msg in history:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    continue
+                elif role in ("assistant", "tool"):
+                    contents.append({"role": "model", "parts": [{"text": content}]})
+                elif role == "user":
+                    contents.append({"role": "user", "parts": [{"text": content}]})
+            contents.append({"role": "user", "parts": [{"text": text}]})
+            full_contents = contents
+        else:
+            full_contents = [
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\nUser said: {text}"}]},
             ]
 
         for iteration in range(5):
@@ -604,7 +928,7 @@ class IntentParser:
                             args.get("options", []),
                         )
                     elif executor:
-                        result = await executor.execute_tool(name, args)
+                        result = await executor.execute_tool(name, args, ask_callback)
                     else:
                         result = {"success": False, "message": "No executor available"}
 
@@ -643,12 +967,14 @@ class IntentParser:
         elif provider == "openrouter":
             model = OPENROUTER_MODEL
 
+        system_prompt = self._get_system_prompt_with_env()
+
         if session_id and session_id in self.sessions:
             messages = list(self.sessions[session_id])
             messages.append({"role": "user", "content": text})
         else:
             messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ]
 
@@ -683,7 +1009,7 @@ class IntentParser:
                             args.get("options", []),
                         )
                     elif executor:
-                        result = await executor.execute_tool(name, args)
+                        result = await executor.execute_tool(name, args, ask_callback)
                     else:
                         result = {"success": False, "message": "No executor available"}
 
@@ -713,8 +1039,26 @@ class IntentParser:
             oldest = list(self.sessions.keys())[0]
             del self.sessions[oldest]
 
+    def _store_session_stream(self, session_id: str, messages: list[dict], user_text: str, assistant_text: str):
+        if session_id not in self.sessions:
+            self.sessions[session_id] = []
+        self.sessions[session_id].append({"role": "user", "content": user_text})
+        self.sessions[session_id].append({"role": "assistant", "content": assistant_text or "Done."})
+        if len(self.sessions[session_id]) > MAX_SESSION_MESSAGES:
+            self.sessions[session_id] = self.sessions[session_id][-MAX_SESSION_MESSAGES:]
+        if len(self.sessions) > MAX_SESSIONS:
+            oldest = list(self.sessions.keys())[0]
+            del self.sessions[oldest]
+
     def _parse_with_rules(self, text: str) -> dict:
         text_lower = text.lower().strip()
+
+        for prefix in ["open folder ", "open file "]:
+            if text_lower.startswith(prefix):
+                return {
+                    "action": "navigate",
+                    "params": {"path": text[len(prefix) :].strip()},
+                }
 
         for prefix in ["open ", "launch ", "start ", "run "]:
             if text_lower.startswith(prefix):
@@ -775,13 +1119,6 @@ class IntentParser:
             if m:
                 path = m.group(1) if m.lastindex else "."
                 return {"action": "list_dir", "params": {"path": path}}
-
-        for prefix in ["open folder ", "open file "]:
-            if text_lower.startswith(prefix):
-                return {
-                    "action": "navigate",
-                    "params": {"path": text[len(prefix) :].strip()},
-                }
 
         m = re.match(
             r"^(?:send\s+)?(?:an?\s+)?email\s+to\s+(.+?)(?:\s+with\s+subject\s+(.+?)(?:\s+and\s+(?:body\s+)?(.+))?)?$",

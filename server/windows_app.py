@@ -73,7 +73,7 @@ def get_password_gui():
 
 def main():
     server = VoiceTalkServer()
-    server.setup("voicetalk")
+    server.setup()
     prompt_setup(server)
 
     loop = asyncio.new_event_loop()

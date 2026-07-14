@@ -1,9 +1,11 @@
-import {ResultMessage, QuestionMessage, ConnectionStatus} from '../types';
+import {ResultMessage, QuestionMessage, ConnectionStatus, StreamChunkMessage, StreamResultMessage} from '../types';
 
 type ResultCallback = (result: ResultMessage) => void;
 type QuestionCallback = (question: QuestionMessage) => void;
 type StatusCallback = (status: ConnectionStatus) => void;
 type ConnectedCallback = (serverUrl: string) => void;
+type StreamChunkCallback = (chunk: StreamChunkMessage) => void;
+type StreamResultCallback = (result: StreamResultMessage) => void;
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -21,6 +23,8 @@ export class WebSocketService {
   private questionCallback: QuestionCallback | null = null;
   private statusCallback: StatusCallback | null = null;
   private connectedCallback: ConnectedCallback | null = null;
+  private streamChunkCallback: StreamChunkCallback | null = null;
+  private streamResultCallback: StreamResultCallback | null = null;
   private shouldReconnect: boolean = true;
 
   onResult(callback: ResultCallback): void {
@@ -37,6 +41,14 @@ export class WebSocketService {
 
   onConnected(callback: ConnectedCallback): void {
     this.connectedCallback = callback;
+  }
+
+  onStreamChunk(callback: StreamChunkCallback): void {
+    this.streamChunkCallback = callback;
+  }
+
+  onStreamResult(callback: StreamResultCallback): void {
+    this.streamResultCallback = callback;
   }
 
   connect(url: string, apiKey: string, provider: string = 'openai'): void {
@@ -128,6 +140,10 @@ export class WebSocketService {
           const data = JSON.parse(raw);
           if (data.type === 'question') {
             this.questionCallback?.(data);
+          } else if (data.type === 'stream_chunk') {
+            this.streamChunkCallback?.(data);
+          } else if (data.type === 'stream_result') {
+            this.streamResultCallback?.(data);
           } else if (data.type === 'result') {
             this.resultCallback?.(data);
           }

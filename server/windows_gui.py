@@ -66,10 +66,9 @@ class LogHandler:
 
 
 class ServerThread(threading.Thread):
-    def __init__(self, config_path: str, master_password: str, log_queue: Queue, status_callback, clients_callback, client_connected_callback=None, activity_callback=None, disconnect_callback=None):
+    def __init__(self, config_path: str, log_queue: Queue, status_callback, clients_callback, client_connected_callback=None, activity_callback=None, disconnect_callback=None):
         super().__init__(daemon=True)
         self.config_path = config_path
-        self.master_password = master_password
         self.log_queue = log_queue
         self.status_callback = status_callback
         self.clients_callback = clients_callback
@@ -94,7 +93,7 @@ class ServerThread(threading.Thread):
         sys.stdout = LogHandler(self.log_queue)
         sys.stderr = LogHandler(self.log_queue)
         try:
-            self.server_instance.setup(self.master_password)
+            self.server_instance.setup()
             self.status_callback("running")
             self._loop.run_until_complete(self.server_instance.run_async())
         except ValueError as e:
@@ -125,8 +124,8 @@ class VoiceTalkServerWithGUI:
         self._client_count = 0
         self.shutdown_event = asyncio.Event()
 
-    def setup(self, master_password: str):
-        self.config.unlock(master_password)
+    def setup(self):
+        self.config.auto_unlock()
         self.intent_parser = IntentParser(self.config)
         self.executor = CommandExecutor(self.config)
         self._log_queue.put("Configuration loaded and unlocked")
@@ -510,17 +509,15 @@ class VoiceTalkGUI:
         except ValueError:
             self._log("ERROR: Failed to unlock config")
             return
-        self._master_pw = "voicetalk"
         self._log("Configuration unlocked")
         self._start_server()
 
     def _start_server(self):
         if self.server_thread and self.server_thread.is_alive():
             return
-        pw = getattr(self, "_master_pw", None) or ""
         self._status("starting")
         self.server_thread = ServerThread(
-            "config.json", pw, self._log_queue,
+            "config.json", self._log_queue,
             lambda s: self.root.after(0, lambda: self._status(s)),
             lambda c: self.root.after(0, lambda: self._clients(c)),
             lambda peer: self.root.after(0, lambda: self._on_client_connected(peer)),

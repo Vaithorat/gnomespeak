@@ -45,8 +45,10 @@ Thumbs.db
 .env
 *.env.local
 
-# Config (contains encrypted secrets - keep safe, but should be tracked for deployment)
-# server/config.json
+# Config (contains encrypted secrets — never commit)
+server/config.json
+server/config.json.bak
+.master
 
 # Logs
 *.log

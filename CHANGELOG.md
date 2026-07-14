@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.1.0] — 2026-07-15
+
+### Added
+- **Streaming responses** — `parse_stream()` async generator yields sentence-level chunks via `stream_chunk`/`stream_result` WebSocket messages. Client displays text incrementally in all 3 modes (voice, conversation, chat).
+- **Safety system** — `SafetyChecker` intercepts destructive tools (delete, move, copy, create_file overwrite) and prompts user for confirmation via existing ask_user flow.
+- **Environment model** — `EnvironmentModel` caches desktop files, installed apps (PowerShell `Get-StartApps`), and recently accessed folders. Injected into system prompt for AI context. Lazy refresh on access + 15-min periodic refresh.
+- **Ollama provider** — 5th AI provider: fully local inference via `localhost:11434/v1`. No data leaves the machine. Works with existing `AsyncOpenAI` client.
+- **PowerShell app launcher** — `app_launcher.py` now uses `Get-StartApps` PowerShell cmdlet for faster, more reliable app discovery. Falls back to Start Menu scan.
+- **Random master password** — First run generates a random 32-char password via `secrets.token_urlsafe(24)` stored in `.master` file. No more hardcoded `"voicetalk"` password.
+- **125 unit tests** — Test suite covering SafetyChecker, EnvironmentModel, FileOps, AppLauncher, IntentParser, CommandExecutor, and MediaControl.
+
+### Changed
+- **Streaming architecture** — Server now streams AI responses incrementally instead of waiting for full completion. Sentence-level chunking (max 500 chars) via regex.
+- **`config.py`** — Removed `DEFAULT_MASTER_PASSWORD` constant. `auto_unlock()` now reads from `.master` file or generates a new random password.
+- **`server.py`** — `setup()` takes no arguments; calls `config.auto_unlock()`.
+- **`command_executor.py`** — Integrates `SafetyChecker` and `EnvironmentModel`. File operations refresh folder caches.
+- **`intent_parser.py`** — Added `parse_stream()` alongside existing `parse()`. Gemini streaming appends user message outside tool loop. `full_response` accumulates across agent iterations.
+- **`windows_gui.py`** — Removed hardcoded password from `ServerThread` and `_start_server()`.
+- **`windows_app.py`** — Uses `server.setup()` without password argument.
+- **`.gitignore`** — `server/config.json` now properly gitignored (was commented out).
+- **Browser control** — All navigation (including general browsing) now uses Playwright instead of `webbrowser.open()`.
+
+### Fixed
+- **Dead regex prefixes** — `"open folder X"` and `"open file X"` were unreachable due to generic `"open "` prefix matching first. Reordered specific prefixes before generic.
+- **PowerShell injection** — App names now escaped with single-quote doubling before embedding in PS commands.
+- **Session storage in streaming** — `_store_session_stream()` now correctly stores both user and assistant messages.
+- **`full_response` accumulation** — Moved initialization before agent loop so text accumulates across iterations.
+- **`streamingChatMsgIdRef` read order** — Ref is now captured before being cleared in `onStreamResult`.
+
 ## [2.0.0] — 2026-07-11
 
 ### Added
