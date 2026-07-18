@@ -49,12 +49,19 @@ class TestAppLauncher:
                 assert result["success"] is True
                 mock_start.assert_called_once_with("C:\\path\\to\\app.exe")
 
+    def test_launch_uses_resolved_path(self):
+        with patch.object(self.launcher, 'find_app') as mock_find:
+            with patch("handlers.app_launcher.os.startfile") as mock_start:
+                result = self.launcher.launch("notepad", "C:\\resolved\\app.exe")
+                assert result["success"] is True
+                mock_start.assert_called_once_with("C:\\resolved\\app.exe")
+                mock_find.assert_not_called()
+
     def test_launch_not_found_fallback(self):
         with patch.object(self.launcher, 'find_app', return_value=None):
-            with patch("handlers.app_launcher.os.startfile") as mock_start:
-                result = self.launcher.launch("some_weird_app")
-                assert result["success"] is True
-                mock_start.assert_called_once_with("some_weird_app")
+            result = self.launcher.launch("some_weird_app")
+            assert result["success"] is False
+            assert "App not found" in result["message"]
 
     def test_launch_error(self):
         with patch.object(self.launcher, 'find_app', return_value="C:\\path\\to\\app.exe"):
@@ -65,10 +72,9 @@ class TestAppLauncher:
 
     def test_launch_not_found_error(self):
         with patch.object(self.launcher, 'find_app', return_value=None):
-            with patch("handlers.app_launcher.os.startfile", side_effect=OSError("File not found")):
-                result = self.launcher.launch("nonexistent")
-                assert result["success"] is False
-                assert "Could not open" in result["message"]
+            result = self.launcher.launch("nonexistent")
+            assert result["success"] is False
+            assert "App not found" in result["message"]
 
     def test_search_name_returns_none_for_nonexistent(self):
         result = self.launcher._search_name("totally_nonexistent_app_12345")
@@ -80,6 +86,14 @@ class TestAppLauncher:
         launcher = AppLauncher(env_model=mock_model)
         result = launcher.find_app("notepad")
         assert result == "C:\\cached\\app.exe"
+        mock_model.get_app_path.assert_called_once_with("notepad")
+
+    def test_resolve_cached(self):
+        mock_model = MagicMock()
+        mock_model.get_app_path.return_value = "C:\\cached\\only.exe"
+        launcher = AppLauncher(env_model=mock_model)
+        result = launcher.resolve_cached("Notepad")
+        assert result == "C:\\cached\\only.exe"
         mock_model.get_app_path.assert_called_once_with("notepad")
 
     def test_env_model_cache_miss_falls_through(self):

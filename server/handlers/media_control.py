@@ -3,7 +3,7 @@ import time
 
 
 pyautogui.PAUSE = 0.05
-pyautogui.FAILSAFE = False
+pyautogui.FAILSAFE = True
 
 
 class MediaControl:

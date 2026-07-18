@@ -2,7 +2,25 @@ import subprocess
 
 
 class BluetoothControl:
+    def _radio_control_supported(self) -> bool:
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-Command",
+                    "@(Get-Command Get-BluetoothRadio -ErrorAction SilentlyContinue, Get-Command Set-BluetoothRadio -ErrorAction SilentlyContinue).Count",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return result.returncode == 0 and result.stdout.strip() == "2"
+        except Exception:
+            return False
+
     def status(self) -> dict:
+        if not self._radio_control_supported():
+            return {"success": False, "message": "Bluetooth radio control is not supported on this Windows setup."}
         try:
             r = subprocess.run(
                 ["powershell", "-Command",
@@ -14,6 +32,8 @@ class BluetoothControl:
             return {"success": False, "message": f"Bluetooth status error: {str(e)}"}
 
     def on(self) -> dict:
+        if not self._radio_control_supported():
+            return {"success": False, "message": "Bluetooth radio control is not supported on this Windows setup."}
         try:
             subprocess.run(
                 ["powershell", "-Command", "Get-BluetoothRadio | Set-BluetoothRadio -Enabled $true"],
@@ -24,6 +44,8 @@ class BluetoothControl:
             return {"success": False, "message": f"Failed to turn on Bluetooth: {str(e)}"}
 
     def off(self) -> dict:
+        if not self._radio_control_supported():
+            return {"success": False, "message": "Bluetooth radio control is not supported on this Windows setup."}
         try:
             subprocess.run(
                 ["powershell", "-Command", "Get-BluetoothRadio | Set-BluetoothRadio -Enabled $false"],
@@ -53,13 +75,13 @@ class BluetoothControl:
     def connect(self, device: str) -> dict:
         return {
             "success": False,
-            "message": f"Bluetooth connect for '{device}' requires winrt. Run: pip install winrt",
+            "message": f"Bluetooth connect for '{device}' is not supported in this release.",
         }
 
     def disconnect(self, device: str) -> dict:
         return {
             "success": False,
-            "message": f"Bluetooth disconnect for '{device}' requires winrt. Run: pip install winrt",
+            "message": f"Bluetooth disconnect for '{device}' is not supported in this release.",
         }
 
     def execute(self, args: dict) -> dict:

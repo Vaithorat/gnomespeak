@@ -1,26 +1,36 @@
 import asyncio
+import ctypes
 import json
+import logging
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from queue import Queue
+from tkinter import filedialog
 import customtkinter as ctk
 import websockets
 from PIL import Image, ImageDraw, ImageFont
 
-from config import Config
+from config import Config, ConfigError, ConfigUnlockError
+from diagnostics import create_diagnostics_bundle
 from auth import Auth
 from intent_parser import IntentParser
 from command_executor import CommandExecutor
+from handlers.browser_control import install_browser_runtime
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 LOGO_ICON = None
+_APPDATA_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "VoiceTalk"
+_LOG_DIR = _APPDATA_DIR / "logs"
+_LOG_FILE = _LOG_DIR / "voicetalk-server.log"
 
 
 def _gen_tray_icon(size=64):
@@ -33,6 +43,34 @@ def _gen_tray_icon(size=64):
 
 
 LOGO_ICON = _gen_tray_icon()
+_SINGLE_INSTANCE_HANDLE = None
+_SINGLE_INSTANCE_MUTEX_NAME = "Local\\VoiceTalkServerSingleton"
+
+
+def _acquire_single_instance() -> bool:
+    global _SINGLE_INSTANCE_HANDLE
+    if _SINGLE_INSTANCE_HANDLE:
+        return True
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return True
+        _SINGLE_INSTANCE_HANDLE = handle
+        return kernel32.GetLastError() != 183
+    except Exception:
+        return True
+
+
+def _release_single_instance():
+    global _SINGLE_INSTANCE_HANDLE
+    if not _SINGLE_INSTANCE_HANDLE:
+        return
+    try:
+        ctypes.windll.kernel32.CloseHandle(_SINGLE_INSTANCE_HANDLE)
+    except Exception:
+        pass
+    _SINGLE_INSTANCE_HANDLE = None
 
 
 def get_lan_ip() -> str:
@@ -51,6 +89,27 @@ def copy_to_clipboard(text: str):
         subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True).communicate(input=text.encode("utf-16-le") + b"\0\x00")
     except Exception:
         pass
+
+
+def _create_file_logger() -> tuple[logging.Logger, Path]:
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger("voicetalk.windows_gui")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not any(
+        isinstance(handler, RotatingFileHandler)
+        and Path(getattr(handler, "baseFilename", "")) == _LOG_FILE
+        for handler in logger.handlers
+    ):
+        handler = RotatingFileHandler(
+            _LOG_FILE,
+            maxBytes=1_000_000,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        logger.addHandler(handler)
+    return logger, _LOG_FILE
 
 
 class LogHandler:
@@ -113,8 +172,6 @@ class VoiceTalkServerWithGUI:
         self.auth = Auth()
         self.intent_parser = None
         self.executor = None
-        self._ws = None
-        self._pending_questions = {}
         self._log_queue = log_queue
         self._status_callback = status_callback
         self._clients_callback = clients_callback
@@ -124,33 +181,40 @@ class VoiceTalkServerWithGUI:
         self._client_count = 0
         self.shutdown_event = asyncio.Event()
 
+    def _queue_log(self, message: str, request_id: str = ""):
+        prefix = f"[{request_id}] " if request_id else ""
+        self._log_queue.put(f"{prefix}{message}")
+
     def setup(self):
         self.config.auto_unlock()
-        self.intent_parser = IntentParser(self.config)
         self.executor = CommandExecutor(self.config)
-        self._log_queue.put("Configuration loaded and unlocked")
+        self.intent_parser = IntentParser(self.config, env_model=self.executor.env_model)
+        self._queue_log("Configuration loaded and unlocked")
 
-    async def _send_question(self, message: str, options=None):
-        q_id = f"q_{int(time.time() * 1000)}_{id(self._ws)}"
+    async def _send_question(self, ws, pending_questions, message: str, options=None, request_id: str = ""):
+        q_id = f"q_{int(time.time() * 1000)}_{id(ws)}"
         future = asyncio.get_event_loop().create_future()
-        self._pending_questions[q_id] = future
+        pending_questions[q_id] = future
         payload = {"type": "question", "id": q_id, "message": message, "options": options or []}
-        await self._ws.send(json.dumps(payload))
+        if request_id:
+            payload["request_id"] = request_id
+        await ws.send(json.dumps(payload))
         try:
             answer = await asyncio.wait_for(future, timeout=60)
             return {"success": True, "text": answer}
         except asyncio.TimeoutError:
-            self._pending_questions.pop(q_id, None)
+            pending_questions.pop(q_id, None)
             return {"success": False, "message": "No answer received within 60s"}
 
     async def handle_client(self, websocket):
         self._client_count += 1
         self._clients_callback(self._client_count)
         peer = websocket.remote_address
-        self._log_queue.put(f"Client connected: {peer}")
+        self._queue_log(f"Client connected: {peer}")
         if self._client_connected_callback:
             self._client_connected_callback(str(peer[0]) if peer else "unknown")
-        self._ws = websocket
+        ws = websocket
+        pending_questions = {}
         try:
             async for raw in websocket:
                 try:
@@ -158,49 +222,95 @@ class VoiceTalkServerWithGUI:
                 except json.JSONDecodeError:
                     await self._send_result(websocket, False, "Invalid JSON")
                     continue
+                request_id = data.get("request_id", "")
                 msg_type = data.get("type")
                 if msg_type == "ping":
                     await websocket.send(json.dumps({"type": "pong"}))
                     continue
                 if msg_type == "answer":
-                    await self._handle_answer(data)
+                    await self._handle_answer(data, pending_questions)
                     continue
                 if msg_type != "command":
-                    await self._send_result(websocket, False, "Unknown message type")
+                    await self._send_result(websocket, False, "Unknown message type", request_id)
                     continue
                 api_key = data.get("api_key", "")
                 provider = data.get("provider", "")
                 text = data.get("text", "").strip()
+                alternatives = [
+                    value.strip() for value in data.get("alternatives", [])
+                    if isinstance(value, str) and value.strip()
+                ]
                 if not text:
-                    await self._send_result(websocket, False, "Empty command")
+                    await self._send_result(websocket, False, "Empty command", request_id)
                     continue
-                self._log_queue.put(f"-> {text}")
+                self._queue_log(f"-> {text}", request_id)
                 if self._activity_callback:
                     self._activity_callback(text)
-                ask_callback = lambda q, opts: self._send_question(q, opts)
-                result = await self.intent_parser.parse(text, executor=self.executor, ask_callback=ask_callback, api_key=api_key, provider=provider)
-                icon = "✓" if result.get("success") else "✗"
-                msg = result.get("message", "")
-                self._log_queue.put(f"<- {icon} {msg}")
-                result["type"] = "result"
-                await websocket.send(json.dumps(result))
+                session_id = data.get("session_id", "") or self.intent_parser.new_session_id()
+                await self.executor.env_model.refresh_if_stale()
+
+                def ask_callback(q, opts):
+                    return self._send_question(ws, pending_questions, q, opts, request_id)
+
+                full_response = ""
+                try:
+                    async for chunk in self.intent_parser.parse_stream(
+                        text, executor=self.executor, ask_callback=ask_callback,
+                        api_key=api_key, provider=provider, session_id=session_id,
+                        alternatives=alternatives,
+                    ):
+                        if chunk["type"] == "chunk":
+                            full_response += chunk["content"]
+                            await websocket.send(json.dumps({
+                                "type": "stream_chunk",
+                                "content": chunk["content"],
+                                "request_id": request_id,
+                            }))
+                        elif chunk["type"] == "tool_result":
+                            pass
+                        elif chunk["type"] == "final":
+                            result = chunk["result"]
+                            final_message = full_response if full_response else result.get("message", "")
+                            icon = "✓" if result.get("success", True) else "✗"
+                            self._queue_log(f"<- {icon} {final_message}", request_id)
+                            await websocket.send(json.dumps({
+                                "type": "stream_result",
+                                "success": result.get("success", True),
+                                "message": final_message,
+                                "request_id": request_id,
+                            }))
+                except Exception as e:
+                    self._queue_log("ERROR: Internal server error", request_id)
+                    await websocket.send(json.dumps({
+                        "type": "stream_result",
+                        "success": False,
+                        "message": "Internal server error",
+                        "request_id": request_id,
+                    }))
         except websockets.exceptions.ConnectionClosed:
-            self._log_queue.put(f"Client disconnected: {peer}")
+            self._queue_log(f"Client disconnected: {peer}")
         finally:
+            for future in pending_questions.values():
+                if not future.done():
+                    future.cancel()
+            pending_questions.clear()
             self._client_count = max(0, self._client_count - 1)
             self._clients_callback(self._client_count)
             if self._disconnect_callback:
                 self._disconnect_callback(str(peer[0]) if peer else "unknown")
 
-    async def _handle_answer(self, data: dict):
+    async def _handle_answer(self, data: dict, pending_questions: dict):
         q_id = data.get("id", "")
         text = data.get("text", "")
-        future = self._pending_questions.pop(q_id, None)
+        future = pending_questions.pop(q_id, None)
         if future and not future.done():
             future.set_result(text)
 
-    async def _send_result(self, websocket, success: bool, message: str):
-        await websocket.send(json.dumps({"type": "result", "success": success, "message": message}))
+    async def _send_result(self, websocket, success: bool, message: str, request_id: str = ""):
+        payload = {"type": "result", "success": success, "message": message}
+        if request_id:
+            payload["request_id"] = request_id
+        await websocket.send(json.dumps(payload))
 
     def _free_port(self, host: str, port: int):
         try:
@@ -211,14 +321,17 @@ class VoiceTalkServerWithGUI:
                 if "LISTENING" in line and f"{host}:{port}" in line:
                     parts = line.strip().split()
                     pid = parts[-1]
-                    subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, startupinfo=startupinfo)
-                    self._log_queue.put(f"Killed stale process on port {port} (PID {pid})")
-                    return True
+                    check = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True, startupinfo=startupinfo)
+                    if "python" in check.stdout.lower():
+                        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True, startupinfo=startupinfo)
+                        self._queue_log(f"Killed stale python process on port {port} (PID {pid})")
+                        return True
         except Exception as e:
-            self._log_queue.put(f"Port cleanup check failed: {e}")
+            self._queue_log(f"Port cleanup check failed: {e}")
         return False
 
     async def run_async(self):
+        await self.executor.initialize()
         self._free_port(self.config.host, self.config.port)
         async with websockets.serve(
             self.handle_client,
@@ -228,7 +341,7 @@ class VoiceTalkServerWithGUI:
             ping_timeout=10,
         ):
             addr = f"{self.config.host}:{self.config.port}"
-            self._log_queue.put(f"Server listening on ws://{addr}")
+            self._queue_log(f"Server listening on ws://{addr}")
             await self.shutdown_event.wait()
 
 
@@ -320,6 +433,37 @@ class PasswordDialog(ctk.CTkToplevel):
             self.destroy()
 
 
+class ConfigRecoveryDialog(ctk.CTkToplevel):
+    def __init__(self, parent, message: str, has_backup: bool):
+        super().__init__(parent)
+        self.result = None
+        self.title("Recover Configuration")
+        self.geometry("520x260")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        frame = ctk.CTkFrame(self, fg_color="transparent")
+        frame.pack(fill="both", expand=True, padx=24, pady=24)
+
+        ctk.CTkLabel(frame, text="Saved configuration could not be unlocked", font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(0, 12))
+        ctk.CTkLabel(frame, text=message, justify="left", wraplength=460).pack(anchor="w", pady=(0, 20))
+
+        buttons = ctk.CTkFrame(frame, fg_color="transparent")
+        buttons.pack(fill="x")
+        ctk.CTkButton(buttons, text="Retry", command=lambda: self._close("retry"), height=36, corner_radius=8, fg_color="#2563EB", hover_color="#1D4ED8").pack(side="left", padx=(0, 8))
+        restore_btn = ctk.CTkButton(buttons, text="Restore Backup", command=lambda: self._close("restore"), height=36, corner_radius=8, fg_color="#374151", hover_color="#4B5563")
+        restore_btn.pack(side="left", padx=8)
+        if not has_backup:
+            restore_btn.configure(state="disabled")
+        ctk.CTkButton(buttons, text="Reset Saved Secrets", command=lambda: self._close("reset"), height=36, corner_radius=8, fg_color="#DC2626", hover_color="#B91C1C").pack(side="left", padx=8)
+        ctk.CTkButton(buttons, text="Quit", command=lambda: self._close("quit"), height=36, corner_radius=8, fg_color="#111827", hover_color="#1F2937").pack(side="right")
+
+    def _close(self, result: str):
+        self.result = result
+        self.destroy()
+
+
 class VoiceTalkGUI:
     def __init__(self):
         self.root = ctk.CTk()
@@ -332,6 +476,7 @@ class VoiceTalkGUI:
         self.server_thread = None
         self._log_queue = Queue()
         self._notif_after_id = None
+        self._file_logger, self._log_file_path = _create_file_logger()
 
         self._icon = _gen_tray_icon(32)
         if self._icon:
@@ -388,11 +533,13 @@ class VoiceTalkGUI:
         ctrl.pack(fill="x", padx=0, pady=0)
         ctrl.pack_propagate(False)
 
-        self.start_btn = ctk.CTkButton(ctrl, text="Start", width=100, height=36, corner_radius=8, fg_color="#2563EB", hover_color="#1D4ED8", font=("Segoe UI", 12, "bold"))
+        self.start_btn = ctk.CTkButton(ctrl, text="Start", width=100, height=36, corner_radius=8, fg_color="#2563EB", hover_color="#1D4ED8", font=("Segoe UI", 12, "bold"), command=self._start_server)
         self.start_btn.pack(side="left", padx=(16, 6), pady=8)
-        self.stop_btn = ctk.CTkButton(ctrl, text="Stop", width=100, height=36, corner_radius=8, fg_color="#DC2626", hover_color="#B91C1C", font=("Segoe UI", 12, "bold"), state="disabled")
+        self.stop_btn = ctk.CTkButton(ctrl, text="Stop", width=100, height=36, corner_radius=8, fg_color="#DC2626", hover_color="#B91C1C", font=("Segoe UI", 12, "bold"), state="disabled", command=self._stop_server)
         self.stop_btn.pack(side="left", padx=6, pady=8)
-        self.settings_btn = ctk.CTkButton(ctrl, text="Settings", width=100, height=36, corner_radius=8, fg_color="#374151", hover_color="#4B5563", font=("Segoe UI", 12, "bold"))
+        self.browser_btn = ctk.CTkButton(ctrl, text="Install Browser", width=130, height=36, corner_radius=8, fg_color="#0EA5E9", hover_color="#0284C7", font=("Segoe UI", 12, "bold"), command=self._install_browser_runtime)
+        self.browser_btn.pack(side="left", padx=6, pady=8)
+        self.settings_btn = ctk.CTkButton(ctrl, text="Settings", width=100, height=36, corner_radius=8, fg_color="#374151", hover_color="#4B5563", font=("Segoe UI", 12, "bold"), command=self._open_settings)
         self.settings_btn.pack(side="right", padx=16, pady=8)
 
         # Log area
@@ -403,7 +550,29 @@ class VoiceTalkGUI:
         log_header.pack(fill="x", padx=16, pady=(10, 0))
         log_header.pack_propagate(False)
 
-        ctk.CTkLabel(log_header, text="Command Log", font=("Segoe UI", 12, "bold"), text_color="#94A3B8").pack(anchor="w")
+        ctk.CTkLabel(log_header, text="Command Log", font=("Segoe UI", 12, "bold"), text_color="#94A3B8").pack(side="left")
+        ctk.CTkButton(
+            log_header,
+            text="Export Logs",
+            width=110,
+            height=28,
+            corner_radius=8,
+            fg_color="#374151",
+            hover_color="#4B5563",
+            font=("Segoe UI", 11, "bold"),
+            command=self._export_logs,
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(
+            log_header,
+            text="Export Diagnostics",
+            width=140,
+            height=28,
+            corner_radius=8,
+            fg_color="#1D4ED8",
+            hover_color="#1E40AF",
+            font=("Segoe UI", 11, "bold"),
+            command=self._export_diagnostics,
+        ).pack(side="right")
 
         self.log_text = ctk.CTkTextbox(log_frame, font=("Consolas", 11), state="disabled", wrap="word", fg_color="#0F172A", text_color="#E2E8F0", corner_radius=8)
         self.log_text.pack(fill="both", expand=True, padx=16, pady=(4, 12))
@@ -428,6 +597,7 @@ class VoiceTalkGUI:
             self.start_btn.configure(state="disabled")
             self.stop_btn.configure(state="normal")
             self.settings_btn.configure(state="disabled")
+            self.browser_btn.configure(state="disabled")
             lan = get_lan_ip()
             port = self.config.port
             addr = f"ws://{lan}:{port}"
@@ -440,6 +610,7 @@ class VoiceTalkGUI:
             self.start_btn.configure(state="normal")
             self.stop_btn.configure(state="disabled")
             self.settings_btn.configure(state="normal")
+            self.browser_btn.configure(state="normal")
             self._connected_peer = None
             self._hide_persistent_notification()
             self.conn_url_entry.configure(state="normal")
@@ -491,11 +662,52 @@ class VoiceTalkGUI:
         self.notif_frame.pack_forget()
 
     def _log(self, msg: str):
+        cleaned = msg.replace("\r", " ").strip()
+        if not cleaned:
+            return
+        self._file_logger.info(cleaned)
         self.log_text.configure(state="normal")
         t = time.strftime("%H:%M:%S")
-        self.log_text.insert("end", f"[{t}] {msg}\n")
+        self.log_text.insert("end", f"[{t}] {cleaned}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _export_logs(self):
+        target = filedialog.asksaveasfilename(
+            title="Export VoiceTalk Logs",
+            defaultextension=".log",
+            initialfile=f"voicetalk-server-{time.strftime('%Y%m%d-%H%M%S')}.log",
+            filetypes=[("Log files", "*.log"), ("All files", "*.*")],
+        )
+        if not target:
+            return
+        try:
+            if self._log_file_path.exists():
+                shutil.copy2(self._log_file_path, target)
+            else:
+                with open(target, "w", encoding="utf-8") as handle:
+                    text = self.log_text.get("1.0", "end").strip()
+                    handle.write(text + ("\n" if text else ""))
+            self._show_notification("Logs exported", "#2563EB")
+        except Exception:
+            self._show_notification("Failed to export logs", "#DC2626")
+
+    def _export_diagnostics(self):
+        success, message, _ = create_diagnostics_bundle(self.config)
+        self._log(message)
+        self._show_notification(message, "#2563EB" if success else "#DC2626")
+
+    def _install_browser_runtime(self):
+        self.browser_btn.configure(state="disabled", text="Installing...")
+
+        def worker():
+            success, message = install_browser_runtime()
+            self._log(message)
+            color = "#2563EB" if success else "#DC2626"
+            self.root.after(0, lambda: self._show_notification(message, color))
+            self.root.after(0, lambda: self.browser_btn.configure(state="normal", text="Install Browser"))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _poll_log(self):
         while not self._log_queue.empty():
@@ -504,11 +716,30 @@ class VoiceTalkGUI:
         self.root.after(100, self._poll_log)
 
     def _show_password(self):
-        try:
-            self.config.auto_unlock()
-        except ValueError:
-            self._log("ERROR: Failed to unlock config")
-            return
+        while True:
+            try:
+                self.config.auto_unlock()
+                break
+            except ConfigUnlockError as exc:
+                self._log("ERROR: Failed to unlock saved config")
+                dialog = ConfigRecoveryDialog(self.root, str(exc), self.config.has_master_backup())
+                self.root.wait_window(dialog)
+                if dialog.result == "restore":
+                    try:
+                        self.config.restore_master_backup()
+                        self._log("Restored .master from backup")
+                    except ConfigError as restore_error:
+                        self._log(f"ERROR: {restore_error}")
+                    continue
+                if dialog.result == "reset":
+                    self.config.reset_encrypted_config()
+                    self._log("Reset encrypted configuration and generated a new master key")
+                    continue
+                if dialog.result == "retry":
+                    continue
+                self._log("Startup cancelled")
+                self.root.after(0, self.root.destroy)
+                return
         self._log("Configuration unlocked")
         self._start_server()
 
@@ -601,5 +832,14 @@ class VoiceTalkGUI:
 
 
 if __name__ == "__main__":
+    if not _acquire_single_instance():
+        try:
+            ctypes.windll.user32.MessageBoxW(0, "VoiceTalk Server is already running.", "VoiceTalk Server", 0x10)
+        except Exception:
+            pass
+        raise SystemExit(0)
     app = VoiceTalkGUI()
-    app.run()
+    try:
+        app.run()
+    finally:
+        _release_single_instance()

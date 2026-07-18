@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 import websockets
 
-from config import Config
+from config import Config, ConfigUnlockError
 from auth import Auth
 from intent_parser import IntentParser
 from command_executor import CommandExecutor
@@ -19,8 +19,6 @@ class VoiceTalkServer:
         self.auth = Auth()
         self.intent_parser = None
         self.executor = None
-        self._ws = None
-        self._pending_questions: dict[str, asyncio.Future] = {}
         self.shutdown_event = asyncio.Event()
         self._setup_signal_handlers()
 
@@ -40,112 +38,131 @@ class VoiceTalkServer:
             print("Found stored API key in config")
 
     async def _send_question(
-        self, message: str, options: list[str] | None = None
+        self, ws, pending_questions, message: str, options: list[str] | None = None, request_id: str = ""
     ) -> dict:
-        q_id = f"q_{int(time.time() * 1000)}_{id(self._ws)}"
+        q_id = f"q_{int(time.time() * 1000)}_{id(ws)}"
         future: asyncio.Future = asyncio.get_event_loop().create_future()
-        self._pending_questions[q_id] = future
+        pending_questions[q_id] = future
         payload = {
             "type": "question",
             "id": q_id,
             "message": message,
             "options": options or [],
         }
-        await self._ws.send(json.dumps(payload))
+        if request_id:
+            payload["request_id"] = request_id
+        await ws.send(json.dumps(payload))
         try:
             answer = await asyncio.wait_for(future, timeout=60)
             return {"success": True, "text": answer}
         except asyncio.TimeoutError:
-            self._pending_questions.pop(q_id, None)
+            pending_questions.pop(q_id, None)
             return {"success": False, "message": "No answer received within 60s"}
 
     async def handle_client(self, websocket):
-        self._ws = websocket
-        async for raw in websocket:
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                await self._send_result(websocket, False, "Invalid JSON")
-                continue
+        ws = websocket
+        pending_questions: dict[str, asyncio.Future] = {}
 
-            msg_type = data.get("type")
-            if msg_type == "ping":
-                await websocket.send(json.dumps({"type": "pong"}))
-                continue
+        def ask_callback(q, opts):
+            return self._send_question(ws, pending_questions, q, opts, request_id)
 
-            if msg_type == "answer":
-                await self._handle_answer(data)
-                continue
+        try:
+            async for raw in websocket:
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    await self._send_result(websocket, False, "Invalid JSON")
+                    continue
 
-            if msg_type != "command":
-                await self._send_result(websocket, False, "Unknown message type")
-                continue
+                msg_type = data.get("type")
+                if msg_type == "ping":
+                    await websocket.send(json.dumps({"type": "pong"}))
+                    continue
 
-            api_key = data.get("api_key", "")
-            provider = data.get("provider", "")
-            text = data.get("text", "").strip()
-            session_id = data.get("session_id", "")
+                if msg_type == "answer":
+                    await self._handle_answer(data, pending_questions)
+                    continue
 
-            if not text:
-                await self._send_result(websocket, False, "Empty command")
-                continue
+                if msg_type != "command":
+                    await self._send_result(websocket, False, "Unknown message type", "")
+                    continue
 
-            ask_callback = (
-                lambda q, opts: self._send_question(q, opts)
-            )
+                api_key = data.get("api_key", "")
+                provider = data.get("provider", "")
+                text = data.get("text", "").strip()
+                alternatives = [
+                    value.strip() for value in data.get("alternatives", [])
+                    if isinstance(value, str) and value.strip()
+                ]
+                session_id = data.get("session_id", "") or self.intent_parser.new_session_id()
+                request_id = data.get("request_id", "")
 
-            await self.executor.env_model.refresh_if_stale()
+                if not text:
+                    await self._send_result(websocket, False, "Empty command", request_id)
+                    continue
 
-            full_response = ""
-            try:
-                async for chunk in self.intent_parser.parse_stream(
-                    text,
-                    executor=self.executor,
-                    ask_callback=ask_callback,
-                    api_key=api_key,
-                    provider=provider,
-                    session_id=session_id or None,
-                ):
-                    if chunk["type"] == "chunk":
-                        full_response += chunk["content"]
-                        await websocket.send(json.dumps({
-                            "type": "stream_chunk",
-                            "content": chunk["content"],
-                        }))
-                    elif chunk["type"] == "tool_result":
-                        pass
-                    elif chunk["type"] == "final":
-                        result = chunk["result"]
-                        final_message = full_response if full_response else result.get("message", "")
-                        await websocket.send(json.dumps({
-                            "type": "stream_result",
-                            "success": result.get("success", True),
-                            "message": final_message,
-                        }))
-            except Exception as e:
-                await websocket.send(json.dumps({
-                    "type": "stream_result",
-                    "success": False,
-                    "message": f"Error: {str(e)}",
-                }))
+                await self.executor.env_model.refresh_if_stale()
 
-    async def _handle_answer(self, data: dict):
+                full_response = ""
+                try:
+                    async for chunk in self.intent_parser.parse_stream(
+                        text,
+                        executor=self.executor,
+                        ask_callback=ask_callback,
+                        api_key=api_key,
+                        provider=provider,
+                        session_id=session_id or None,
+                        alternatives=alternatives,
+                    ):
+                        if chunk["type"] == "chunk":
+                            full_response += chunk["content"]
+                            await websocket.send(json.dumps({
+                                "type": "stream_chunk",
+                                "content": chunk["content"],
+                                "request_id": request_id,
+                            }))
+                        elif chunk["type"] == "tool_result":
+                            pass
+                        elif chunk["type"] == "final":
+                            result = chunk["result"]
+                            final_message = full_response if full_response else result.get("message", "")
+                            await websocket.send(json.dumps({
+                                "type": "stream_result",
+                                "success": result.get("success", True),
+                                "message": final_message,
+                                "request_id": request_id,
+                            }))
+                except Exception as e:
+                    import logging
+                    logging.exception("Error during parse_stream")
+                    await websocket.send(json.dumps({
+                        "type": "stream_result",
+                        "success": False,
+                        "message": "Internal server error",
+                        "request_id": request_id,
+                    }))
+        finally:
+            for future in pending_questions.values():
+                if not future.done():
+                    future.cancel()
+            pending_questions.clear()
+
+    async def _handle_answer(self, data: dict, pending_questions: dict):
         q_id = data.get("id", "")
         text = data.get("text", "")
-        future = self._pending_questions.pop(q_id, None)
+        future = pending_questions.pop(q_id, None)
         if future and not future.done():
             future.set_result(text)
 
-    async def _send_result(self, websocket, success: bool, message: str):
-        await websocket.send(
-            json.dumps(
-                {
-                    "type": "result",
-                    "success": success,
-                    "message": message,
-                }
-            )
-        )
+    async def _send_result(self, websocket, success: bool, message: str, request_id: str = ""):
+        payload = {
+            "type": "result",
+            "success": success,
+            "message": message,
+        }
+        if request_id:
+            payload["request_id"] = request_id
+        await websocket.send(json.dumps(payload))
 
     async def run_async(self):
         self.shutdown_event.clear()
@@ -197,9 +214,12 @@ def prompt_setup(server: VoiceTalkServer):
 
 if __name__ == "__main__":
     server = VoiceTalkServer()
-    server.setup()
-    prompt_setup(server)
     try:
+        server.setup()
+        prompt_setup(server)
         server.run()
+    except ConfigUnlockError as exc:
+        print(exc)
+        raise SystemExit(1)
     except KeyboardInterrupt:
         print("\nShutting down.")

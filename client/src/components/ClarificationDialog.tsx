@@ -38,7 +38,11 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
       animationType="fade"
       onRequestClose={onDismiss}>
       <View style={styles.overlay}>
-        <View style={styles.dialog}>
+        <View
+          accessibilityViewIsModal
+          accessible
+          accessibilityLabel="Clarification required"
+          style={styles.dialog}>
           <Text style={styles.question}>{question}</Text>
 
           {options.length > 0 && (
@@ -48,6 +52,8 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
                   <TouchableOpacity
                     key={i}
                     style={styles.optionBtn}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Answer option: ${opt}`}
                     onPress={() => handleSelect(opt)}>
                     <Text style={styles.optionText}>{opt}</Text>
                   </TouchableOpacity>
@@ -63,12 +69,15 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
             placeholder="Type your answer..."
             placeholderTextColor="#94A3B8"
             autoFocus={options.length === 0}
+            accessibilityLabel="Type your answer"
           />
 
           <View style={styles.actions}>
             <TouchableOpacity
               style={[styles.sendBtn, !freeText.trim() && styles.sendBtnDisabled]}
               disabled={!freeText.trim()}
+              accessibilityRole="button"
+              accessibilityLabel="Send clarification answer"
               onPress={() => {
                 const text = freeText.trim();
                 if (text) {
@@ -77,7 +86,11 @@ export const ClarificationDialog: React.FC<ClarificationDialogProps> = ({
               }}>
               <Text style={styles.sendBtnText}>Send</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onDismiss}>
+            <TouchableOpacity
+              style={styles.cancelBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel clarification"
+              onPress={onDismiss}>
               <Text style={styles.cancelBtnText}>Cancel</Text>
             </TouchableOpacity>
           </View>
@@ -118,9 +131,11 @@ const styles = StyleSheet.create({
   optionBtn: {
     backgroundColor: '#F1F5F9',
     borderRadius: 10,
+    minHeight: 44,
     paddingVertical: 11,
     paddingHorizontal: 16,
     marginBottom: 6,
+    justifyContent: 'center',
   },
   optionText: {
     fontSize: 14,
@@ -145,8 +160,10 @@ const styles = StyleSheet.create({
   sendBtn: {
     backgroundColor: '#2563EB',
     borderRadius: 10,
+    minHeight: 44,
     paddingVertical: 10,
     paddingHorizontal: 20,
+    justifyContent: 'center',
   },
   sendBtnDisabled: {
     backgroundColor: '#CBD5E1',
@@ -157,8 +174,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   cancelBtn: {
+    minHeight: 44,
     paddingVertical: 10,
     paddingHorizontal: 20,
+    justifyContent: 'center',
   },
   cancelBtnText: {
     color: '#64748B',

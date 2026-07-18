@@ -47,14 +47,15 @@ export const ConversationThread: React.FC<Props> = ({messages, liveText, isListe
   }, [messages, liveText, isListening]);
 
   return (
-    <FlatList
-      ref={listRef}
-      data={data}
-      keyExtractor={item => item.id}
-      renderItem={({item}) => <MessageBubble message={item} />}
-      contentContainerStyle={styles.listContent}
-      style={styles.list}
-    />
+      <FlatList
+        ref={listRef}
+        data={data}
+        keyExtractor={item => item.id}
+        renderItem={({item}) => <MessageBubble message={item} />}
+        contentContainerStyle={styles.listContent}
+        style={styles.list}
+        accessibilityLabel="Conversation messages"
+      />
   );
 };
 

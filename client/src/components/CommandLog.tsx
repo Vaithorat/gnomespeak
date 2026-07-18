@@ -20,7 +20,7 @@ const CommandItem: React.FC<{entry: CommandLogEntry}> = ({entry}) => (
 );
 
 export const CommandLog: React.FC<Props> = ({entries}) => (
-  <View style={styles.wrapper}>
+  <View style={styles.wrapper} accessible accessibilityLabel="Recent command history">
     <FlatList
       data={entries}
       keyExtractor={item => item.id}
@@ -28,7 +28,7 @@ export const CommandLog: React.FC<Props> = ({entries}) => (
       contentContainerStyle={styles.container}
       showsVerticalScrollIndicator={false}
       ListEmptyComponent={
-        <Text style={styles.empty}>
+        <Text style={styles.empty} accessibilityLiveRegion="polite">
           No commands yet. Hold the mic button to speak.
         </Text>
       }

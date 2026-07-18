@@ -9,6 +9,7 @@ import {
   Animated,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import {ConnectionStatus} from '../components/ConnectionStatus';
 import {RecordButton, RecordingState} from '../components/RecordButton';
@@ -27,12 +28,23 @@ import {useConversationMode} from '../hooks/useConversationMode';
 
 type PipelineStep = 'idle' | 'listening' | 'processing_stt' | 'sending' | 'waiting' | 'done' | 'error';
 type AppMode = 'voice' | 'conversation' | 'chat';
+type PendingRequestState = {
+  mode: 'voice' | 'chat';
+  text: string;
+  logId?: string;
+  chatMsgId?: string;
+};
 
 const MAX_LOG = 10;
+const MAX_CHAT_MESSAGES = 100;
 const SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 
 function limitEntries(entries: CommandLogEntry[]): CommandLogEntry[] {
   return entries.slice(0, MAX_LOG);
+}
+
+function limitConversationMessages(messages: ConversationMessage[]): ConversationMessage[] {
+  return messages.slice(-MAX_CHAT_MESSAGES);
 }
 
 function getStatusBar(step: PipelineStep, hearingText: string, lastResult: string): {text: string; color: string} {
@@ -55,9 +67,19 @@ function getStatusBar(step: PipelineStep, hearingText: string, lastResult: strin
 }
 
 let sessionCounter = 0;
+let requestCounter = 0;
+
+function generateRequestId(): string {
+  requestCounter++;
+  return `req_${Date.now()}_${requestCounter}`;
+}
 
 export const HomeScreen: React.FC = () => {
   const {settings} = useContext(AppContext);
+  const {
+    apiKey: activeApiKey,
+    provider: activeProvider,
+  } = getActiveProvider(settings);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatusType>('disconnected');
   const [logEntries, setLogEntries] = useState<CommandLogEntry[]>([]);
@@ -65,6 +87,7 @@ export const HomeScreen: React.FC = () => {
     id: string;
     message: string;
     options: string[];
+    requestId?: string;
   } | null>(null);
   const [pipelineStep, setPipelineStep] = useState<PipelineStep>('idle');
   const [hearingText, setHearingText] = useState('');
@@ -75,13 +98,21 @@ export const HomeScreen: React.FC = () => {
   const sessionIdRef = useRef(`chat_${Date.now()}_${++sessionCounter}`);
   const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const convMode = useConversationMode();
+  const {
+    isActive: isConversationActive,
+    messages: conversationMessages,
+    liveText: conversationLiveText,
+    start: startConversationMode,
+    stop: stopConversationMode,
+    resetSession: resetConversationSession,
+    handleStreamChunk: handleConversationStreamChunk,
+    handleStreamResult: handleConversationStreamResult,
+    handleStreamQuestion: handleConversationStreamQuestion,
+  } = useConversationMode();
   const [appMode, setAppMode] = useState<AppMode>('voice');
   const convModeRef = useRef(false);
   const chatModeRef = useRef(false);
-  const streamingTextRef = useRef('');
-  const streamingLogIdRef = useRef<string | null>(null);
-  const streamingChatMsgIdRef = useRef<string | null>(null);
+  const requestStatesRef = useRef(new Map<string, PendingRequestState>());
 
   // Chat mode state
   const [chatMessages, setChatMessages] = useState<ConversationMessage[]>([]);
@@ -92,12 +123,65 @@ export const HomeScreen: React.FC = () => {
   const resetSession = useCallback(() => {
     sessionIdRef.current = `chat_${Date.now()}_${++sessionCounter}`;
     if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
+    requestStatesRef.current.clear();
     setLogEntries([]);
+    setQuestion(null);
+    setHearingText('');
     setLastResult('');
     setPipelineStep('idle');
     setChatMessages([]);
     setChatWaiting(false);
   }, []);
+
+  const handleNewChat = useCallback(() => {
+    const hasConversationActivity = conversationMessages.length > 0 || conversationLiveText;
+    const hasActivity =
+      hasConversationActivity ||
+      logEntries.length > 0 ||
+      chatMessages.length > 0 ||
+      chatWaiting ||
+      question !== null ||
+      requestStatesRef.current.size > 0;
+
+    const resetNow = () => {
+      resetSession();
+      if (appMode === 'conversation') {
+        void resetConversationSession();
+      }
+    };
+
+    if (!hasActivity) {
+      resetNow();
+      return;
+    }
+
+    Alert.alert(
+      'Start new chat?',
+      'This clears the current conversation and any pending replies.',
+      [
+        {text: 'Cancel', style: 'cancel'},
+        {text: 'New Chat', style: 'destructive', onPress: resetNow},
+      ],
+    );
+  }, [
+    appMode,
+    chatMessages.length,
+    chatWaiting,
+    conversationLiveText,
+    conversationMessages.length,
+    logEntries.length,
+    question,
+    resetConversationSession,
+    resetSession,
+  ]);
+
+  const guidanceMessage = !settings.serverUrl.trim()
+    ? 'Add your server URL in Settings to connect to your PC.'
+    : !activeApiKey
+      ? 'Add at least one provider API key in Settings before sending commands.'
+      : connectionStatus !== 'connected'
+        ? 'Connect to your trusted LAN server before using voice or chat.'
+        : '';
 
   const refreshSessionTimer = useCallback(() => {
     if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
@@ -111,11 +195,18 @@ export const HomeScreen: React.FC = () => {
       if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
       if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
     };
-  }, []);
+  }, [resetSession]);
 
   useEffect(() => {
     resetSession();
-  }, [settings.serverUrl, settings.openaiKey, settings.geminiKey, settings.opencodeKey, settings.openrouterKey]);
+  }, [
+    resetSession,
+    settings.serverUrl,
+    settings.openaiKey,
+    settings.geminiKey,
+    settings.opencodeKey,
+    settings.openrouterKey,
+  ]);
 
   useEffect(() => {
     convModeRef.current = appMode === 'conversation';
@@ -123,44 +214,56 @@ export const HomeScreen: React.FC = () => {
   }, [appMode]);
 
   useEffect(() => {
-    wsService.onStatusChange(setConnectionStatus);
+    const offStatus = wsService.onStatusChange(setConnectionStatus);
 
-    wsService.onStreamChunk(chunk => {
-      streamingTextRef.current += chunk.content;
-      const currentText = streamingTextRef.current;
+    const offStreamChunk = wsService.onStreamChunk(chunk => {
+      const requestId = chunk.request_id;
 
       if (convModeRef.current) {
-        convMode.handleStreamChunk(chunk.content);
-      } else if (chatModeRef.current) {
-        const msgId = streamingChatMsgIdRef.current;
-        if (msgId) {
-          setChatMessages(prev => {
-            const updated = [...prev];
-            for (let i = updated.length - 1; i >= 0; i--) {
-              if (updated[i].id === msgId) {
-                updated[i] = {...updated[i], text: currentText};
-                break;
-              }
-            }
-            return updated;
-          });
-        } else {
-          const newId = `ai_${Date.now()}`;
-          streamingChatMsgIdRef.current = newId;
-          setChatMessages(prev => [
-            ...prev,
-            {
-              id: newId,
-              role: 'assistant',
-              text: currentText,
-              timestamp: Date.now(),
-              isFinal: false,
-            },
-          ]);
-        }
+        handleConversationStreamChunk(chunk.content, requestId);
       } else {
-        const logId = streamingLogIdRef.current;
-        if (logId) {
+        if (!requestId) {
+          return;
+        }
+        const requestState = requestStatesRef.current.get(requestId);
+        if (!requestState) {
+          return;
+        }
+        requestState.text += chunk.content;
+        const currentText = requestState.text;
+
+        if (requestState.mode === 'chat') {
+          const msgId = requestState.chatMsgId;
+          if (msgId) {
+            setChatMessages(prev => {
+              const updated = [...prev];
+              for (let i = updated.length - 1; i >= 0; i--) {
+                if (updated[i].id === msgId) {
+                  updated[i] = {...updated[i], text: currentText};
+                  break;
+                }
+              }
+              return updated;
+            });
+          } else {
+            const newId = `ai_${Date.now()}`;
+            requestState.chatMsgId = newId;
+            setChatMessages(prev => limitConversationMessages([
+              ...prev,
+              {
+                id: newId,
+                role: 'assistant',
+                text: currentText,
+                timestamp: Date.now(),
+                isFinal: false,
+              },
+            ]));
+          }
+        } else {
+          const logId = requestState.logId;
+          if (!logId) {
+            return;
+          }
           setLogEntries(prev => {
             const updated = [...prev];
             for (let i = 0; i < updated.length; i++) {
@@ -176,17 +279,50 @@ export const HomeScreen: React.FC = () => {
       }
     });
 
-    wsService.onStreamResult(result => {
-      const finalText = streamingTextRef.current || result.message;
-      const logId = streamingLogIdRef.current;
-      const chatMsgId = streamingChatMsgIdRef.current;
-      streamingTextRef.current = '';
-      streamingLogIdRef.current = null;
-      streamingChatMsgIdRef.current = null;
+    const offStreamResult = wsService.onStreamResult(result => {
+      const requestId = result.request_id;
 
       if (convModeRef.current) {
-        convMode.handleStreamResult(finalText, result.success);
-      } else if (chatModeRef.current) {
+        handleConversationStreamResult(result.message, result.success, requestId);
+        return;
+      }
+
+      const requestState = requestId
+        ? requestStatesRef.current.get(requestId)
+        : undefined;
+      if (requestId) {
+        requestStatesRef.current.delete(requestId);
+      }
+      const finalText = requestState?.text || result.message;
+
+      if (!requestState) {
+        if (chatModeRef.current) {
+          setChatMessages(prev => limitConversationMessages([
+            ...prev,
+            {
+              id: `ai_${Date.now()}`,
+              role: 'assistant',
+              text: finalText,
+              timestamp: Date.now(),
+              isFinal: true,
+            },
+          ]));
+          setChatWaiting(false);
+          return;
+        }
+
+        setLastResult(finalText);
+        setPipelineStep(result.success ? 'done' : 'error');
+        Animated.sequence([
+          Animated.timing(statusAnim, {toValue: 1, duration: 200, useNativeDriver: true}),
+        ]).start();
+        if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+        doneTimerRef.current = setTimeout(() => setPipelineStep('idle'), 5000);
+        return;
+      }
+
+      if (requestState.mode === 'chat') {
+        const chatMsgId = requestState.chatMsgId;
         if (chatMsgId) {
           setChatMessages(prev => {
             const updated = [...prev];
@@ -199,7 +335,7 @@ export const HomeScreen: React.FC = () => {
             return updated;
           });
         } else {
-          setChatMessages(prev => [
+          setChatMessages(prev => limitConversationMessages([
             ...prev,
             {
               id: `ai_${Date.now()}`,
@@ -208,10 +344,11 @@ export const HomeScreen: React.FC = () => {
               timestamp: Date.now(),
               isFinal: true,
             },
-          ]);
+          ]));
         }
         setChatWaiting(false);
       } else {
+        const logId = requestState.logId;
         setLastResult(finalText);
         if (result.success) {
           setPipelineStep('done');
@@ -234,109 +371,147 @@ export const HomeScreen: React.FC = () => {
             }
             return limitEntries(updated);
           });
-        } else {
-          setLogEntries(prev => {
-            for (let i = 0; i < prev.length; i++) {
-              if (prev[i].result === 'Sending...') {
-                const updated = [...prev];
-                updated[i] = {...updated[i], result: finalText, success: result.success};
-                return limitEntries(updated);
-              }
-            }
-            return limitEntries(prev);
-          });
         }
       }
     });
 
-    wsService.onResult(result => {
+    const offResult = wsService.onResult(result => {
       if (convModeRef.current) {
-        convMode.handleStreamResult(result.message, result.success);
-      } else if (chatModeRef.current) {
-        setChatMessages(prev => [
-          ...prev,
-          {
-            id: `ai_${Date.now()}`,
-            role: 'assistant',
-            text: result.message,
-            timestamp: Date.now(),
-            isFinal: true,
-          },
-        ]);
-        setChatWaiting(false);
+        handleConversationStreamResult(result.message, result.success, result.request_id);
       } else {
-        setLastResult(result.message);
-        if (result.success) {
-          setPipelineStep('done');
-        } else {
-          setPipelineStep('error');
+        const requestState = result.request_id
+          ? requestStatesRef.current.get(result.request_id)
+          : undefined;
+        if (result.request_id) {
+          requestStatesRef.current.delete(result.request_id);
         }
-        Animated.sequence([
-          Animated.timing(statusAnim, {toValue: 1, duration: 200, useNativeDriver: true}),
-        ]).start();
-        if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
-        doneTimerRef.current = setTimeout(() => setPipelineStep('idle'), 5000);
-        setLogEntries(prev => {
-          for (let i = 0; i < prev.length; i++) {
-            if (prev[i].result === 'Sending...') {
-              const updated = [...prev];
-              updated[i] = {
-                ...updated[i],
-                result: result.message,
-                success: result.success,
-              };
-              return limitEntries(updated);
-            }
+
+        if (!requestState) {
+          if (chatModeRef.current) {
+            setChatMessages(prev => limitConversationMessages([
+              ...prev,
+              {
+                id: `ai_${Date.now()}`,
+                role: 'assistant',
+                text: result.message,
+                timestamp: Date.now(),
+                isFinal: true,
+              },
+            ]));
+            setChatWaiting(false);
+            return;
           }
-          return limitEntries(prev);
-        });
+
+          setLastResult(result.message);
+          setPipelineStep(result.success ? 'done' : 'error');
+          Animated.sequence([
+            Animated.timing(statusAnim, {toValue: 1, duration: 200, useNativeDriver: true}),
+          ]).start();
+          if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+          doneTimerRef.current = setTimeout(() => setPipelineStep('idle'), 5000);
+          return;
+        }
+
+        if (requestState.mode === 'chat') {
+          setChatMessages(prev => limitConversationMessages([
+            ...prev,
+            {
+              id: `ai_${Date.now()}`,
+              role: 'assistant',
+              text: result.message,
+              timestamp: Date.now(),
+              isFinal: true,
+            },
+          ]));
+          setChatWaiting(false);
+        } else {
+          setLastResult(result.message);
+          if (result.success) {
+            setPipelineStep('done');
+          } else {
+            setPipelineStep('error');
+          }
+          Animated.sequence([
+            Animated.timing(statusAnim, {toValue: 1, duration: 200, useNativeDriver: true}),
+          ]).start();
+          if (doneTimerRef.current) clearTimeout(doneTimerRef.current);
+          doneTimerRef.current = setTimeout(() => setPipelineStep('idle'), 5000);
+          if (requestState.logId) {
+            setLogEntries(prev => limitEntries(prev.map(entry =>
+              entry.id === requestState.logId
+                ? {...entry, result: result.message, success: result.success}
+                : entry,
+            )));
+          }
+        }
       }
     });
-    wsService.onQuestion(q => {
+    const offQuestion = wsService.onQuestion(q => {
       if (convModeRef.current) {
-        convMode.handleStreamQuestion(q.id, `${q.message}\n${q.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`);
-      } else if (chatModeRef.current) {
-        setChatMessages(prev => [
-          ...prev,
-          {
-            id: `q_${Date.now()}`,
-            role: 'question',
-            text: `${q.message}\n${q.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`,
-            timestamp: Date.now(),
-            isFinal: true,
-          },
-        ]);
+        handleConversationStreamQuestion(q.id, `${q.message}\n${q.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`, q.request_id);
       } else {
-        setQuestion({id: q.id, message: q.message, options: q.options});
+        if (chatModeRef.current) {
+          setChatMessages(prev => limitConversationMessages([
+            ...prev,
+            {
+              id: `q_${Date.now()}`,
+              role: 'question',
+              text: `${q.message}\n${q.options.map((o, i) => `${i + 1}. ${o}`).join('\n')}`,
+              timestamp: Date.now(),
+              isFinal: true,
+            },
+          ]));
+        }
+        setQuestion({id: q.id, message: q.message, options: q.options, requestId: q.request_id});
       }
     });
 
-    const {apiKey, provider} = getActiveProvider(settings);
-    if (settings.serverUrl && apiKey) {
-      wsService.connect(settings.serverUrl, apiKey, provider);
+    if (settings.serverUrl && activeApiKey) {
+      wsService.connect(settings.serverUrl, activeApiKey, activeProvider);
     }
 
     return () => {
+      offStatus();
+      offStreamChunk();
+      offStreamResult();
+      offResult();
+      offQuestion();
       wsService.disconnect();
     };
-  }, [settings.serverUrl, settings.openaiKey, settings.geminiKey, settings.opencodeKey, settings.openrouterKey]);
+  }, [
+    activeApiKey,
+    activeProvider,
+    handleConversationStreamChunk,
+    handleConversationStreamQuestion,
+    handleConversationStreamResult,
+    settings.serverUrl,
+    settings.openaiKey,
+    settings.geminiKey,
+    settings.opencodeKey,
+    settings.openrouterKey,
+    statusAnim,
+  ]);
 
   const switchMode = useCallback(async (newMode: AppMode) => {
     if (appMode === 'conversation') {
-      await convMode.stop();
+      await stopConversationMode();
     }
     setAppMode(newMode);
-  }, [appMode, convMode]);
+  }, [appMode, stopConversationMode]);
 
-  const handleTranscript = useCallback((text: string) => {
+  const handleTranscript = useCallback((text: string, alternatives: string[] = []) => {
     if (question) {
       return;
     }
     setPipelineStep('sending');
     refreshSessionTimer();
-    streamingTextRef.current = '';
     const entryId = Date.now().toString();
-    streamingLogIdRef.current = entryId;
+    const requestId = generateRequestId();
+    requestStatesRef.current.set(requestId, {
+      mode: 'voice',
+      text: '',
+      logId: entryId,
+    });
     const entry: CommandLogEntry = {
       id: entryId,
       transcript: text,
@@ -345,7 +520,18 @@ export const HomeScreen: React.FC = () => {
       timestamp: Date.now(),
     };
     setLogEntries(prev => limitEntries([entry, ...prev]));
-    wsService.sendWithSession(text, sessionIdRef.current);
+    const sendStatus = wsService.sendWithSession(text, sessionIdRef.current, requestId, alternatives);
+    if (!sendStatus.ok) {
+      requestStatesRef.current.delete(requestId);
+      setLastResult(sendStatus.error || 'Failed to send command.');
+      setPipelineStep('error');
+      setLogEntries(prev => limitEntries(prev.map(entry =>
+        entry.id === entryId
+          ? {...entry, result: sendStatus.error || 'Failed to send command.', success: false}
+          : entry,
+      )));
+      return;
+    }
     setTimeout(() => setPipelineStep('waiting'), 500);
   }, [question, refreshSessionTimer]);
 
@@ -381,7 +567,12 @@ export const HomeScreen: React.FC = () => {
 
   const handleAnswer = useCallback((text: string) => {
     if (question) {
-      wsService.sendAnswer(question.id, text);
+      const sendStatus = wsService.sendAnswer(question.id, text, question.requestId);
+      if (!sendStatus.ok) {
+        setLastResult(sendStatus.error || 'Failed to send answer.');
+        setPipelineStep('error');
+        return;
+      }
       setQuestion(null);
     }
   }, [question]);
@@ -391,10 +582,19 @@ export const HomeScreen: React.FC = () => {
     const text = chatInput.trim();
     if (!text || chatWaiting) return;
 
+    if (question) {
+      handleAnswer(text);
+      setChatInput('');
+      return;
+    }
+
     refreshSessionTimer();
-    streamingTextRef.current = '';
-    streamingChatMsgIdRef.current = null;
-    setChatMessages(prev => [
+    const requestId = generateRequestId();
+    requestStatesRef.current.set(requestId, {
+      mode: 'chat',
+      text: '',
+    });
+    setChatMessages(prev => limitConversationMessages([
       ...prev,
       {
         id: `user_${Date.now()}`,
@@ -403,11 +603,25 @@ export const HomeScreen: React.FC = () => {
         timestamp: Date.now(),
         isFinal: true,
       },
-    ]);
+    ]));
     setChatInput('');
     setChatWaiting(true);
-    wsService.sendWithSession(text, sessionIdRef.current);
-  }, [chatInput, chatWaiting, refreshSessionTimer]);
+    const sendStatus = wsService.sendWithSession(text, sessionIdRef.current, requestId);
+    if (!sendStatus.ok) {
+      requestStatesRef.current.delete(requestId);
+      setChatWaiting(false);
+      setChatMessages(prev => limitConversationMessages([
+        ...prev,
+        {
+          id: `ai_${Date.now()}`,
+          role: 'assistant',
+          text: sendStatus.error || 'Failed to send message.',
+          timestamp: Date.now(),
+          isFinal: true,
+        },
+      ]));
+    }
+  }, [chatInput, chatWaiting, handleAnswer, question, refreshSessionTimer]);
 
   // Conversation mode callbacks
   const toggleConversationMode = useCallback(async () => {
@@ -415,9 +629,9 @@ export const HomeScreen: React.FC = () => {
       await switchMode('voice');
     } else {
       await switchMode('conversation');
-      await convMode.start();
+      await startConversationMode();
     }
-  }, [appMode, switchMode, convMode]);
+  }, [appMode, startConversationMode, switchMode]);
 
   const toggleChatMode = useCallback(() => {
     if (appMode === 'chat') {
@@ -438,23 +652,36 @@ export const HomeScreen: React.FC = () => {
             compact
           />
           <View style={styles.convTopRight}>
-            <TouchableOpacity onPress={resetSession} style={styles.convNewChatBtn}>
+            <TouchableOpacity
+              onPress={handleNewChat}
+              style={styles.convNewChatBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Start a new conversation">
               <Text style={styles.convNewChatText}>New Chat</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => switchMode('voice')} style={styles.endButton}>
+            <TouchableOpacity
+              onPress={() => switchMode('voice')}
+              style={styles.endButton}
+              accessibilityRole="button"
+              accessibilityLabel="End conversation mode">
               <Text style={styles.endButtonText}>End</Text>
             </TouchableOpacity>
           </View>
         </View>
+        {guidanceMessage ? (
+          <View style={styles.guidanceBanner} accessible accessibilityLiveRegion="polite">
+            <Text style={styles.guidanceText}>{guidanceMessage}</Text>
+          </View>
+        ) : null}
         <ConversationThread
-          messages={convMode.messages}
-          liveText={convMode.liveText}
-          isListening={convMode.isActive}
+          messages={conversationMessages}
+          liveText={conversationLiveText}
+          isListening={isConversationActive}
         />
         <View style={styles.convListeningBar}>
-          <Animated.View style={[styles.listeningDot, convMode.isActive && styles.listeningDotActive]} />
-          <Text style={styles.listeningText}>
-            {convMode.isActive ? 'Listening...' : 'Stopped'}
+          <Animated.View style={[styles.listeningDot, isConversationActive && styles.listeningDotActive]} />
+          <Text style={styles.listeningText} accessibilityLiveRegion="polite">
+            {isConversationActive ? 'Listening...' : 'Stopped'}
           </Text>
         </View>
       </SafeAreaView>
@@ -472,14 +699,27 @@ export const HomeScreen: React.FC = () => {
             compact
           />
           <View style={styles.convTopRight}>
-            <TouchableOpacity onPress={resetSession} style={styles.convNewChatBtn}>
+            <TouchableOpacity
+              onPress={handleNewChat}
+              style={styles.convNewChatBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Start a new chat">
               <Text style={styles.convNewChatText}>New Chat</Text>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => switchMode('voice')} style={styles.endButton}>
+            <TouchableOpacity
+              onPress={() => switchMode('voice')}
+              style={styles.endButton}
+              accessibilityRole="button"
+              accessibilityLabel="Switch to voice mode">
               <Text style={styles.endButtonText}>Voice</Text>
             </TouchableOpacity>
           </View>
         </View>
+        {guidanceMessage ? (
+          <View style={styles.guidanceBanner} accessible accessibilityLiveRegion="polite">
+            <Text style={styles.guidanceText}>{guidanceMessage}</Text>
+          </View>
+        ) : null}
         <ConversationThread
           messages={chatMessages}
           liveText={undefined}
@@ -499,11 +739,14 @@ export const HomeScreen: React.FC = () => {
               multiline
               maxLength={500}
               editable={!chatWaiting}
+              accessibilityLabel={question ? 'Type your clarification answer' : 'Type a command'}
             />
             <TouchableOpacity
               style={[styles.chatSendBtn, (!chatInput.trim() || chatWaiting) && styles.chatSendBtnDisabled]}
               onPress={handleChatSend}
-              disabled={!chatInput.trim() || chatWaiting}>
+              disabled={!chatInput.trim() || chatWaiting}
+              accessibilityRole="button"
+              accessibilityLabel={question ? 'Send clarification answer' : 'Send chat command'}>
               <Text style={styles.chatSendBtnText}>{chatWaiting ? '...' : 'Send'}</Text>
             </TouchableOpacity>
           </View>
@@ -521,12 +764,19 @@ export const HomeScreen: React.FC = () => {
         status={connectionStatus}
         serverUrl={settings.serverUrl}
       />
+      {guidanceMessage ? (
+        <View style={styles.guidanceBanner} accessible accessibilityLiveRegion="polite">
+          <Text style={styles.guidanceText}>{guidanceMessage}</Text>
+        </View>
+      ) : null}
       <View style={styles.content}>
         <View style={styles.topActions}>
           <TouchableOpacity
             onPress={toggleConversationMode}
             style={[styles.conversationToggle, connectionStatus !== 'connected' && styles.conversationToggleDisabled]}
             disabled={connectionStatus !== 'connected'}
+            accessibilityRole="button"
+            accessibilityLabel="Switch to conversation mode"
           >
             <Text style={[styles.conversationToggleText, connectionStatus !== 'connected' && styles.conversationToggleTextDisabled]}>
               Conversation
@@ -536,12 +786,18 @@ export const HomeScreen: React.FC = () => {
             onPress={toggleChatMode}
             style={[styles.chatToggle, connectionStatus !== 'connected' && styles.conversationToggleDisabled]}
             disabled={connectionStatus !== 'connected'}
+            accessibilityRole="button"
+            accessibilityLabel="Switch to chat mode"
           >
             <Text style={[styles.chatToggleText, connectionStatus !== 'connected' && styles.conversationToggleTextDisabled]}>
               Chat
             </Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={resetSession} style={styles.newChatBtn}>
+          <TouchableOpacity
+            onPress={handleNewChat}
+            style={styles.newChatBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Start a new chat">
             <Text style={styles.newChatBtnText}>New Chat</Text>
           </TouchableOpacity>
         </View>
@@ -552,8 +808,12 @@ export const HomeScreen: React.FC = () => {
           onHearingChange={handleHearingChange}
           disabled={connectionStatus !== 'connected' || question !== null}
         />
-        <Animated.View style={[styles.statusBar, {backgroundColor: sb.color + '12', opacity: statusAnim}]}>
-          <Text style={[styles.statusText, {color: sb.color}]}>
+        <Animated.View
+          style={[styles.statusBar, {backgroundColor: sb.color + '12', opacity: statusAnim}]}
+          accessible
+          accessibilityRole="summary"
+          accessibilityState={{busy: pipelineStep === 'sending' || pipelineStep === 'waiting' || pipelineStep === 'processing_stt'}}>
+          <Text style={[styles.statusText, {color: sb.color}]} accessibilityLiveRegion="polite">
             {sb.text}
           </Text>
         </Animated.View>
@@ -588,10 +848,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   conversationToggle: {
+    minHeight: 44,
     paddingVertical: 8,
     paddingHorizontal: 14,
     backgroundColor: '#F1F5F9',
     borderRadius: 20,
+    justifyContent: 'center',
   },
   conversationToggleText: {
     fontSize: 13,
@@ -605,10 +867,12 @@ const styles = StyleSheet.create({
     color: '#CBD5E1',
   },
   chatToggle: {
+    minHeight: 44,
     paddingVertical: 8,
     paddingHorizontal: 14,
     backgroundColor: '#EFF6FF',
     borderRadius: 20,
+    justifyContent: 'center',
   },
   chatToggleText: {
     fontSize: 13,
@@ -616,10 +880,12 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   newChatBtn: {
+    minHeight: 44,
     paddingVertical: 8,
     paddingHorizontal: 14,
     backgroundColor: '#F0FDF4',
     borderRadius: 20,
+    justifyContent: 'center',
   },
   newChatBtnText: {
     fontSize: 13,
@@ -653,10 +919,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   convNewChatBtn: {
+    minHeight: 44,
     paddingVertical: 6,
     paddingHorizontal: 12,
     backgroundColor: '#EFF6FF',
     borderRadius: 14,
+    justifyContent: 'center',
   },
   convNewChatText: {
     color: '#2563EB',
@@ -664,10 +932,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   endButton: {
+    minHeight: 44,
     paddingVertical: 6,
     paddingHorizontal: 14,
     backgroundColor: '#FEE2E2',
     borderRadius: 14,
+    justifyContent: 'center',
+  },
+  guidanceBanner: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#FFF7ED',
+  },
+  guidanceText: {
+    color: '#9A3412',
+    fontSize: 13,
+    lineHeight: 18,
   },
   endButtonText: {
     color: '#DC2626',

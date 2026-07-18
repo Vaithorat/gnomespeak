@@ -4,6 +4,8 @@ export interface CommandMessage {
   api_key: string;
   provider?: string;
   session_id?: string;
+  request_id?: string;
+  alternatives?: string[];
 }
 
 export interface ConversationMessage {
@@ -18,17 +20,20 @@ export interface ResultMessage {
   type: 'result';
   success: boolean;
   message: string;
+  request_id?: string;
 }
 
 export interface StreamChunkMessage {
   type: 'stream_chunk';
   content: string;
+  request_id?: string;
 }
 
 export interface StreamResultMessage {
   type: 'stream_result';
   success: boolean;
   message: string;
+  request_id?: string;
 }
 
 export interface QuestionMessage {
@@ -36,12 +41,14 @@ export interface QuestionMessage {
   id: string;
   message: string;
   options: string[];
+  request_id?: string;
 }
 
 export interface AnswerMessage {
   type: 'answer';
   id: string;
   text: string;
+  request_id?: string;
 }
 
 export type ServerMessage = ResultMessage | StreamChunkMessage | StreamResultMessage | QuestionMessage;

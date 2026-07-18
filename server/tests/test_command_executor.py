@@ -11,7 +11,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 class TestCommandExecutorNonDestructive:
     def setup_method(self):
-        self.tmpdir = tempfile.mkdtemp()
+        from pathlib import Path
+        self.tmpdir = str(Path.home() / "Desktop" / "_voicetalk_test_tmp")
+        os.makedirs(self.tmpdir, exist_ok=True)
 
     def teardown_method(self):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
@@ -37,7 +39,7 @@ class TestCommandExecutorNonDestructive:
     @pytest.mark.asyncio
     async def test_list_dir(self):
         executor = self._make_executor()
-        result = await executor.execute_tool("list_dir", {"path": "."})
+        result = await executor.execute_tool("list_dir", {"path": self.tmpdir})
         assert result["success"] is True
         assert "Contents of" in result["message"]
 
@@ -93,6 +95,30 @@ class TestCommandExecutorNonDestructive:
             assert result["success"] is True
 
     @pytest.mark.asyncio
+    async def test_browser_search(self):
+        executor = self._make_executor()
+        with patch.object(executor.browser, 'search_web', new=AsyncMock(return_value={"success": True, "message": "ok"})) as mock:
+            result = await executor.execute_tool("browser_search", {"query": "python tutorials", "engine": "google"})
+            assert result["success"] is True
+            mock.assert_awaited_once_with("python tutorials", "google")
+
+    @pytest.mark.asyncio
+    async def test_yt_play(self):
+        executor = self._make_executor()
+        with patch.object(executor.browser, 'yt_play_first', new=AsyncMock(return_value={"success": True, "message": "ok"})) as mock:
+            result = await executor.execute_tool("yt_play", {"query": "lofi hip hop"})
+            assert result["success"] is True
+            mock.assert_awaited_once_with("lofi hip hop")
+
+    @pytest.mark.asyncio
+    async def test_yt_play_first_result(self):
+        executor = self._make_executor()
+        with patch.object(executor.browser, 'yt_play_first_result', new=AsyncMock(return_value={"success": True, "message": "ok"})) as mock:
+            result = await executor.execute_tool("yt_play_first_result", {})
+            assert result["success"] is True
+            mock.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
     async def test_volume_set(self):
         executor = self._make_executor()
         with patch.object(executor.media_player, 'set_volume', return_value={"success": True, "message": "ok"}):
@@ -105,6 +131,14 @@ class TestCommandExecutorNonDestructive:
         with patch.object(executor.media_player, 'set_volume', return_value={"success": True, "message": "ok"}) as mock:
             result = await executor.execute_tool("set_volume", {"level": "not_a_number"})
             mock.assert_called_once_with(50)
+
+    @pytest.mark.asyncio
+    async def test_volume_mute(self):
+        executor = self._make_executor()
+        with patch.object(executor.media_player, 'volume_mute', return_value={"success": True, "message": "ok"}) as mock:
+            result = await executor.execute_tool("volume_mute", {})
+            assert result["success"] is True
+            mock.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_bluetooth_status(self):
@@ -128,7 +162,7 @@ class TestCommandExecutorNonDestructive:
     @pytest.mark.asyncio
     async def test_safety_allows_list_dir(self):
         executor = self._make_executor()
-        result = await executor.execute_tool("list_dir", {"path": "."}, ask_callback=None)
+        result = await executor.execute_tool("list_dir", {"path": self.tmpdir}, ask_callback=None)
         assert result["success"] is True
 
     @pytest.mark.asyncio
@@ -136,3 +170,28 @@ class TestCommandExecutorNonDestructive:
         executor = self._make_executor()
         result = await executor.execute({"action": "get_system_info", "params": {}})
         assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_open_app_uses_cached_resolution(self):
+        executor = self._make_executor()
+        with patch.object(executor.app_launcher, "resolve_cached", return_value="C:\\cached\\app.exe") as mock_cached:
+            with patch.object(executor.app_launcher, "find_app") as mock_find:
+                with patch.object(executor.safety, "check", new=AsyncMock(return_value=None)):
+                    with patch.object(executor.app_launcher, "launch", return_value={"success": True, "message": "Opened app"}) as mock_launch:
+                        result = await executor.execute_tool("open_app", {"name": "notepad"})
+                        assert result["success"] is True
+                        mock_cached.assert_called_once_with("notepad")
+                        mock_find.assert_not_called()
+                        mock_launch.assert_called_once_with("notepad", "C:\\cached\\app.exe")
+
+    @pytest.mark.asyncio
+    async def test_open_app_falls_back_to_threaded_lookup(self):
+        executor = self._make_executor()
+        with patch.object(executor.app_launcher, "resolve_cached", return_value=""):
+            with patch.object(executor.app_launcher, "find_app", return_value="C:\\resolved\\app.exe") as mock_find:
+                with patch.object(executor.safety, "check", new=AsyncMock(return_value=None)):
+                    with patch.object(executor.app_launcher, "launch", return_value={"success": True, "message": "Opened app"}) as mock_launch:
+                        result = await executor.execute_tool("open_app", {"name": "notepad"})
+                        assert result["success"] is True
+                        mock_find.assert_called_once_with("notepad")
+                        mock_launch.assert_called_once_with("notepad", "C:\\resolved\\app.exe")

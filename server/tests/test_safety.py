@@ -31,8 +31,20 @@ class TestSafetyChecker:
 
     @pytest.mark.asyncio
     async def test_non_destructive_tools_pass_through_3(self):
-        result = await self.checker.check("browser_navigate", {"url": "google.com"})
+        async def mock_ask(q, opts):
+            return {"success": True, "text": "Yes, open it"}
+
+        result = await self.checker.check("browser_navigate", {"url": "google.com"}, mock_ask)
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_browser_navigate_cancelled(self):
+        async def mock_ask(q, opts):
+            return {"success": True, "text": "No, cancel"}
+
+        result = await self.checker.check("browser_navigate", {"url": "google.com"}, mock_ask)
+        assert result is not None
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_delete_confirmed(self):
@@ -53,9 +65,10 @@ class TestSafetyChecker:
         assert "cancelled" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_delete_no_callback_defaults_to_approve(self):
+    async def test_delete_no_callback_defaults_to_deny(self):
         result = await self.checker.check("delete", {"path": "/tmp/test.txt"}, None)
-        assert result is None
+        assert result is not None
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_delete_empty_path_passes_through(self):
@@ -78,6 +91,16 @@ class TestSafetyChecker:
         result = await self.checker.check("move", {"source": "/tmp/a.txt", "destination": "/tmp/b.txt"}, mock_ask)
         assert result is not None
         assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_move_destination_exists_cancelled(self):
+        async def mock_ask(q, opts):
+            return {"success": True, "text": "No, cancel"}
+
+        with patch("safety.Path.exists", return_value=True):
+            result = await self.checker.check("move", {"source": "/tmp/a.txt", "destination": "/tmp/b.txt"}, mock_ask)
+            assert result is not None
+            assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_copy_destination_exists_confirmed(self):
@@ -124,10 +147,11 @@ class TestSafetyChecker:
             assert result["success"] is False
 
     @pytest.mark.asyncio
-    async def test_create_file_not_exists_passes_through(self):
+    async def test_create_file_outside_allowlist_no_callback_denies(self):
         with patch("safety.os.path.exists", return_value=False):
             result = await self.checker.check("create_file", {"path": "/tmp/new.txt"})
-            assert result is None
+            assert result is not None
+            assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_create_file_empty_path_passes_through(self):
@@ -139,6 +163,28 @@ class TestSafetyChecker:
         self.checker.enabled = False
         result = await self.checker.check("delete", {"path": "/tmp/test.txt"})
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_open_app_resolved_target_blocked(self):
+        async def mock_ask(q, opts):
+            return {"success": True, "text": "No, cancel"}
+
+        result = await self.checker.check(
+            "open_app",
+            {"name": "terminal", "_resolved_path": r"C:\Windows\System32\cmd.exe"},
+            mock_ask,
+        )
+        assert result is not None
+        assert result["success"] is False
+
+    @pytest.mark.asyncio
+    async def test_play_media_cancelled(self):
+        async def mock_ask(q, opts):
+            return {"success": True, "text": "No, cancel"}
+
+        result = await self.checker.check("play_media", {"query": "song"}, mock_ask)
+        assert result is not None
+        assert result["success"] is False
 
     @pytest.mark.asyncio
     async def test_exception_in_ask_defaults_to_deny(self):

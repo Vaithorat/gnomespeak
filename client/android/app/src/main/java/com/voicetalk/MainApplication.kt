@@ -1,6 +1,7 @@
 package com.voicetalk
 
 import android.app.Application
+import com.facebook.react.ReactInstanceManager
 import com.facebook.react.PackageList
 import com.facebook.react.ReactApplication
 import com.facebook.react.ReactHost
@@ -9,7 +10,6 @@ import com.facebook.react.ReactPackage
 import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint.load
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.facebook.react.defaults.DefaultReactNativeHost
-import com.facebook.react.flipper.ReactNativeFlipper
 import com.facebook.soloader.SoLoader
 
 class MainApplication : Application(), ReactApplication {
@@ -40,6 +40,23 @@ class MainApplication : Application(), ReactApplication {
       // If you opted-in for the New Architecture, we load the native entry point for this app.
       load()
     }
-    ReactNativeFlipper.initializeFlipper(this, reactNativeHost.reactInstanceManager)
+    initializeFlipper()
+  }
+
+  private fun initializeFlipper() {
+    if (!BuildConfig.DEBUG) {
+      return
+    }
+
+    try {
+      val flipperClass = Class.forName("com.facebook.react.flipper.ReactNativeFlipper")
+      val initializeMethod = flipperClass.getMethod(
+          "initializeFlipper",
+          android.content.Context::class.java,
+          ReactInstanceManager::class.java,
+      )
+      initializeMethod.invoke(null, this, reactNativeHost.reactInstanceManager)
+    } catch (_: Exception) {
+    }
   }
 }

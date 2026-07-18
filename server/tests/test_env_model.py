@@ -145,10 +145,9 @@ class TestEnvironmentModel:
     async def test_refresh_if_stale_when_stale(self):
         self.model._last_full_refresh = 0
         self.model._refresh_interval = 0
-        with patch.object(self.model, '_full_refresh') as mock_refresh:
-            with patch('asyncio.create_task') as mock_task:
-                await self.model.refresh_if_stale()
-                mock_task.assert_called_once()
+        with patch.object(self.model, '_do_refresh') as mock_refresh:
+            await self.model.refresh_if_stale()
+            mock_refresh.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_refresh_if_stale_when_fresh(self):

@@ -1,5 +1,8 @@
+import asyncio
 import json
+import logging
 import re
+import uuid
 from openai import AsyncOpenAI
 
 try:
@@ -19,13 +22,13 @@ CRITICAL RULES — ALWAYS FOLLOW:
 YouTube / Video Rules:
 - To play a YouTube video, use ONLY `yt_play` — it searches AND opens the video in ONE step. Do NOT call browser_navigate, browser_search, or yt_search before yt_play.
 - For "play X" requests, call ONLY `yt_play(query="X")`. Do NOT open firefox first. Do NOT open youtube.com first. Just call yt_play directly.
-- `yt_play` opens a real browser, navigates to the video, and auto-plays it. You do NOT need to call media_control after yt_play.
+- `yt_play` opens a real browser, navigates to the video, and attempts autoplay. If it reports autoplay was blocked, use `media_control` with `play_pause`.
 - To browse YouTube results without playing, use `yt_search`.
 - When user wants a specific video from results, use `yt_results` to fetch matches, present via `ask_user`, then open with `browser_navigate`.
 - NEVER open multiple browser tabs for a single task. All navigation happens in one browser.
 
 Bluetooth / Media:
-- For Bluetooth control, use `control_bluetooth` to turn on/off and connect devices.
+- For Bluetooth control, use `control_bluetooth` for radio status/on/off and device scans only. Do not promise connect/disconnect support.
 - For volume control, use `set_volume`, `volume_up`, `volume_down`, or `volume_mute`.
 - To play a local file, use `play_media` to search and play from Music/Downloads.
 - For keyboard/media actions (play, pause, skip, fullscreen), use `media_control`.
@@ -77,7 +80,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "yt_play",
-            "description": "Search YouTube for a song/video and navigate to the first result with autoplay",
+            "description": "Search YouTube for a song/video, open the first result, and report whether autoplay actually started or was blocked",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -288,18 +291,18 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "control_bluetooth",
-            "description": "Control Bluetooth on the PC: turn on/off, scan, or connect to a device",
+            "description": "Control Bluetooth on the PC: check status, turn the radio on/off when supported, or scan for devices",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["on", "off", "status", "scan", "connect", "disconnect"],
+                        "enum": ["on", "off", "status", "scan"],
                         "description": "Bluetooth action to perform",
                     },
                     "device": {
                         "type": "string",
-                        "description": "Device name (required for connect/disconnect)",
+                        "description": "Reserved for future Bluetooth device targeting",
                     },
                 },
                 "required": ["action"],
@@ -310,7 +313,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_system_info",
-            "description": "Get information about the PC: OS, Bluetooth hardware, audio devices, etc.",
+            "description": "Get information about the PC: OS details and current Bluetooth status message.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -398,7 +401,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "media_control",
-            "description": "Control media playback and browser via keyboard shortcuts. Use play_pause to start/resume a paused video (e.g. YouTube). Use fullscreen for fullscreen mode. IMPORTANT: After opening a YouTube video with yt_play, ALWAYS call this with action='play_pause' to ensure it starts playing.",
+            "description": "Control media playback and browser via keyboard shortcuts. Use play_pause to start/resume a paused video (e.g. YouTube) when playback is blocked or paused. Use fullscreen for fullscreen mode.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -430,14 +433,15 @@ TOOLS = [
 
 
 OPENGODE_BASE_URL = "https://opencode.ai/zen/go/v1"
-OPENGODE_MODEL = "deepseek-v4-flash"
+OPENGODE_MODEL = "deepseek-v4-flash-free"
 GEMINI_MODEL = "gemini-2.0-flash"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-OPENROUTER_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+OPENROUTER_MODEL = "nvidia/nemotron-nano-9b-v2:free"
 
 
 MAX_SESSIONS = 50
-MAX_SESSION_MESSAGES = 100
+MAX_SESSION_MESSAGES = 30
+MAX_TOOL_RESULT_CHARS = 500
 
 SENTENCE_ENDINGS = re.compile(r'[.!?]\s|\n')
 MAX_CHUNK_CHARS = 500
@@ -449,10 +453,104 @@ class IntentParser:
         self.default_client = None
         self.default_provider = None
         self.sessions: dict[str, list[dict]] = {}
+        self._sessions_lock = asyncio.Lock()
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        self._session_counter = 0
         self.env_model = env_model
         self._init_default()
 
+    def new_session_id(self) -> str:
+        self._session_counter += 1
+        return f"s_{uuid.uuid4().hex[:8]}_{self._session_counter}"
+
+    async def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        async with self._sessions_lock:
+            lock = self._session_locks.get(session_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._session_locks[session_id] = lock
+            return lock
+
+    async def _load_session_messages(self, session_id: str | None, system_prompt: str, text: str) -> list[dict]:
+        if not session_id:
+            return [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": text},
+            ]
+        lock = await self._get_session_lock(session_id)
+        async with lock:
+            history = list(self.sessions.get(session_id, []))
+        if history:
+            history.append({"role": "user", "content": text})
+            return history
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text},
+        ]
+
+    async def _load_gemini_contents(self, session_id: str | None, system_prompt: str, text: str) -> list[dict]:
+        if not session_id:
+            return [
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\nUser said: {text}"}]},
+            ]
+        lock = await self._get_session_lock(session_id)
+        async with lock:
+            history = list(self.sessions.get(session_id, []))
+        if not history:
+            return [
+                {"role": "user", "parts": [{"text": f"{system_prompt}\n\nUser said: {text}"}]},
+            ]
+        contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
+        contents.append({"role": "model", "parts": [{"text": "Understood. I will follow all rules including English-only responses, full PC control, and single-tab browser execution."}]})
+        for msg in history:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                continue
+            if role in ("assistant", "tool"):
+                contents.append({"role": "model", "parts": [{"text": content}]})
+            elif role == "user":
+                contents.append({"role": "user", "parts": [{"text": content}]})
+        contents.append({"role": "user", "parts": [{"text": text}]})
+        return contents
+
+    async def _append_session_entries(self, session_id: str | None, *entries: dict):
+        if not session_id:
+            return
+        lock = await self._get_session_lock(session_id)
+        async with lock:
+            history = list(self.sessions.get(session_id, []))
+            history.extend(entries)
+            await self._store_session_locked(session_id, history)
+
+    async def _store_session(self, session_id: str | None, messages: list[dict]):
+        if not session_id:
+            return
+        lock = await self._get_session_lock(session_id)
+        async with lock:
+            await self._store_session_locked(session_id, messages)
+
+    async def _store_session_locked(self, session_id: str, messages: list[dict]):
+        async with self._sessions_lock:
+            if session_id in self.sessions:
+                del self.sessions[session_id]
+            self.sessions[session_id] = list(messages[-MAX_SESSION_MESSAGES:])
+            if len(self.sessions) > MAX_SESSIONS:
+                oldest = next(iter(self.sessions))
+                if oldest == session_id and len(self.sessions) > 1:
+                    oldest = next(key for key in self.sessions if key != session_id)
+                del self.sessions[oldest]
+                self._session_locks.pop(oldest, None)
+
     def _init_default(self):
+        configured = self.config.data.get("default_provider")
+        if configured:
+            key_name = f"{configured}_api_key"
+            api_key = self.config.get_secret(key_name)
+            if api_key:
+                self.default_provider = configured
+                self._build_client(configured, api_key)
+                return
         for provider, key_name in [
             ("openai", "openai_api_key"),
             ("opencode", "opencode_api_key"),
@@ -479,6 +577,35 @@ class IntentParser:
                 api_key=api_key, base_url=OPENROUTER_BASE_URL
             )
 
+    @staticmethod
+    def _provider_error_message(error: Exception) -> str:
+        text = str(error)
+        if "ResourceExhausted" in text or "request limit reached" in text:
+            return "AI provider is rate-limited right now. Retry in a moment or switch providers."
+        return "AI provider error"
+
+    @staticmethod
+    def _parse_volume_level(value: str) -> int | None:
+        value = value.strip().lower()
+        named_levels = {
+            "full": 100,
+            "max": 100,
+            "maximum": 100,
+            "highest": 100,
+            "half": 50,
+            "medium": 50,
+            "zero": 0,
+            "min": 0,
+            "minimum": 0,
+            "lowest": 0,
+        }
+        if value in named_levels:
+            return named_levels[value]
+        m = re.fullmatch(r"(100|[1-9]?\d)\s*%?", value)
+        if m:
+            return int(m.group(1))
+        return None
+
     def _make_client(self, provider: str, api_key: str):
         if provider == "openai":
             return ("openai", AsyncOpenAI(api_key=api_key))
@@ -498,10 +625,131 @@ class IntentParser:
                 prompt += "\n\n" + env_ctx
         return prompt
 
-    async def parse(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None) -> dict:
+    def _match_deterministic_command(self, text: str) -> dict | None:
+        text_lower = text.lower().strip()
+        matchers = [
+            self._match_volume_command,
+            self._match_bluetooth_command,
+            self._match_open_path_command,
+            self._match_browser_command,
+            self._match_navigation_command,
+            self._match_youtube_command,
+            self._match_search_command,
+            self._match_list_command,
+            self._match_email_command,
+            self._match_create_file_command,
+            self._match_create_folder_command,
+            self._match_delete_command,
+            self._match_copy_command,
+            self._match_move_command,
+            self._match_app_command,
+        ]
+        for matcher in matchers:
+            command = matcher(text, text_lower)
+            if command:
+                return command
+        return None
+
+    def _normalize_command_text(self, text: str) -> str:
+        normalized = re.sub(r"\s+", " ", text.strip())
+        normalized = re.sub(
+            r"^(?:now\s+)?(?:i\s+want\s+you\s+to|want\s+you\s+to|what\s+you\s+to|can\s+you|could\s+you|would\s+you|please)\s+",
+            "",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        normalized = re.sub(r"\bopen\s+of\s+(youtube|google|bing|duckduckgo)\b", r"open \1", normalized, flags=re.IGNORECASE)
+        return normalized.strip(" ,.")
+
+    def _split_command_sequence(self, text: str) -> list[str]:
+        normalized = self._normalize_command_text(text)
+        parts = [part.strip(" ,.") for part in re.split(r"\s*(?:,\s*)?(?:and then|then)\s+", normalized, flags=re.IGNORECASE) if part.strip(" ,.")]
+        return parts or [normalized]
+
+    def _resolve_deterministic_sequence(self, text: str, alternatives: list[str] | None = None) -> list[dict] | None:
+        candidates = [self._normalize_command_text(text)]
+        if alternatives:
+            seen = {candidates[0].lower()}
+            for alternative in alternatives:
+                normalized = self._normalize_command_text(alternative)
+                if not normalized:
+                    continue
+                key = normalized.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                candidates.append(normalized)
+
+        for candidate in candidates:
+            parts = self._split_command_sequence(candidate)
+            if len(parts) <= 1:
+                continue
+            commands = []
+            for part in parts:
+                command = self._match_deterministic_command(part)
+                if not command:
+                    commands = []
+                    break
+                commands.append(command)
+            if commands:
+                return commands
+        return None
+
+    def _resolve_deterministic_command(self, text: str, alternatives: list[str] | None = None) -> dict | None:
+        normalized = self._normalize_command_text(text)
+        command = self._match_deterministic_command(normalized)
+        if command:
+            return command
+
+        if not alternatives:
+            return None
+
+        seen = {normalized.lower()}
+        for alternative in alternatives:
+            normalized_alternative = self._normalize_command_text(alternative)
+            if not normalized_alternative:
+                continue
+            key = normalized_alternative.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            command = self._match_deterministic_command(normalized_alternative)
+            if command:
+                return command
+        return None
+
+    async def _execute_deterministic_sequence(self, executor, commands: list[dict]) -> dict:
+        results = []
+        for index, command in enumerate(commands, start=1):
+            result = await executor.execute(command)
+            if not result.get("success"):
+                message = result.get("message", "Command failed")
+                if len(commands) > 1:
+                    message = f"Step {index} failed: {message}"
+                return {"success": False, "message": message}
+            results.append(result)
+
+        if not results:
+            return {"success": False, "message": "No deterministic commands were executed."}
+        if len(results) == 1:
+            return results[0]
+
+        messages = [result.get("message", "Done.") for result in results if result.get("message")]
+        return {"success": True, "message": " Then ".join(messages) or "Done."}
+
+    async def parse(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None, alternatives=None) -> dict:
+        deterministic_sequence = self._resolve_deterministic_sequence(text, alternatives)
+        if deterministic_sequence:
+            return await self._execute_deterministic_sequence(executor, deterministic_sequence)
+
+        deterministic_command = self._resolve_deterministic_command(text, alternatives)
+        if deterministic_command:
+            return await executor.execute(deterministic_command)
+
+        command = self._parse_with_rules(text)
+
         actual_provider = provider or self.default_provider
         if not actual_provider:
-            command = self._parse_with_rules(text)
             return await executor.execute(command)
 
         actual_client = self.default_client
@@ -519,18 +767,31 @@ class IntentParser:
                 else:
                     return await self._parse_with_agent(text, executor, ask_callback, actual_client, actual_provider, session_id)
             except Exception as e:
+                logging.exception("Agent error in parse")
                 return {
                     "success": False,
-                    "message": f"Agent error: {str(e)}",
+                    "message": self._provider_error_message(e),
                 }
 
-        command = self._parse_with_rules(text)
         return await executor.execute(command)
 
-    async def parse_stream(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None):
+    async def parse_stream(self, text: str, executor=None, ask_callback=None, api_key=None, provider=None, session_id=None, alternatives=None):
+        deterministic_sequence = self._resolve_deterministic_sequence(text, alternatives)
+        if deterministic_sequence:
+            result = await self._execute_deterministic_sequence(executor, deterministic_sequence)
+            yield {"type": "final", "result": result}
+            return
+
+        deterministic_command = self._resolve_deterministic_command(text, alternatives)
+        if deterministic_command:
+            result = await executor.execute(deterministic_command)
+            yield {"type": "final", "result": result}
+            return
+
+        command = self._parse_with_rules(text)
+
         actual_provider = provider or self.default_provider
         if not actual_provider:
-            command = self._parse_with_rules(text)
             result = await executor.execute(command)
             yield {"type": "final", "result": result}
             return
@@ -553,17 +814,17 @@ class IntentParser:
                         yield chunk
                 return
             except Exception as e:
-                yield {"type": "final", "result": {"success": False, "message": f"Agent error: {str(e)}"}}
+                logging.exception("Agent error in parse_stream")
+                yield {"type": "final", "result": {"success": False, "message": self._provider_error_message(e)}}
                 return
 
-        command = self._parse_with_rules(text)
         result = await executor.execute(command)
         yield {"type": "final", "result": result}
 
     async def _parse_with_agent_stream(
         self, text: str, executor, ask_callback, client, provider="openai", session_id=None
     ):
-        model = "gpt-3.5-turbo"
+        model = self.config.data.get("default_model", "gpt-4o-mini")
         if provider == "opencode":
             model = OPENGODE_MODEL
         elif provider == "openrouter":
@@ -572,27 +833,24 @@ class IntentParser:
         system_prompt = self._get_system_prompt_with_env()
         full_response = ""
 
-        if session_id and session_id in self.sessions:
-            messages = list(self.sessions[session_id])
-            messages.append({"role": "user", "content": text})
-        else:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ]
+        messages = await self._load_session_messages(session_id, system_prompt, text)
 
         full_response = ""
         for _ in range(10):
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                temperature=0.1,
-                max_tokens=1024,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            try:
+                response = await asyncio.wait_for(client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    temperature=0.1,
+                    max_tokens=1024,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                ), timeout=30)
+            except asyncio.TimeoutError:
+                yield {"type": "final", "result": {"success": False, "message": "AI provider timed out"}}
+                return
 
             text_buffer = ""
             tool_calls_data = []
@@ -616,8 +874,11 @@ class IntentParser:
                     while True:
                         split_pos = -1
                         for ending_match in SENTENCE_ENDINGS.finditer(text_buffer):
-                            split_pos = ending_match.end()
-                        if split_pos > 0 and split_pos <= MAX_CHUNK_CHARS:
+                            pos = ending_match.end()
+                            if pos <= MAX_CHUNK_CHARS:
+                                split_pos = pos
+                                break
+                        if split_pos > 0:
                             yield {"type": "chunk", "content": text_buffer[:split_pos]}
                             text_buffer = text_buffer[split_pos:]
                         elif len(text_buffer) >= MAX_CHUNK_CHARS:
@@ -649,8 +910,15 @@ class IntentParser:
 
             if finish_reason == "stop":
                 if session_id:
-                    self._store_session_stream(session_id, messages, text, full_response)
+                    await self._store_session(session_id, messages)
                 yield {"type": "final", "result": {"success": True, "message": full_response or "Done."}}
+                return
+
+            if finish_reason in ("length", "content_filter") and not tool_calls_data:
+                if session_id:
+                    await self._store_session(session_id, messages)
+                reason = "response truncated (length limit)" if finish_reason == "length" else "content filtered"
+                yield {"type": "final", "result": {"success": bool(full_response), "message": full_response or f"AI provider {reason}"}}
                 return
 
             if tool_calls_data:
@@ -679,10 +947,13 @@ class IntentParser:
 
                     yield {"type": "tool_result", "tool": tc["name"], "result": result}
 
+                    result_json = json.dumps(result)
+                    if len(result_json) > MAX_TOOL_RESULT_CHARS:
+                        result_json = result_json[:MAX_TOOL_RESULT_CHARS] + "...(truncated)"
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": json.dumps(result),
+                        "content": result_json,
                     })
 
                 tool_calls_data = []
@@ -691,7 +962,7 @@ class IntentParser:
             break
 
         if session_id:
-            self._store_session_stream(session_id, messages, text, full_response)
+            await self._store_session(session_id, messages)
         yield {"type": "final", "result": {"success": False, "message": "Agent reached maximum iterations."}}
 
     async def _parse_with_gemini_stream(self, text: str, executor, client, ask_callback=None, session_id=None):
@@ -726,25 +997,7 @@ class IntentParser:
                 )]
             ))
 
-        if session_id and session_id in self.sessions:
-            history = self.sessions[session_id]
-            contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
-            contents.append({"role": "model", "parts": [{"text": "Understood. I will follow all rules including English-only responses, full PC control, and single-tab browser execution."}]})
-            for msg in history:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "system":
-                    continue
-                elif role in ("assistant", "tool"):
-                    contents.append({"role": "model", "parts": [{"text": content}]})
-                elif role == "user":
-                    contents.append({"role": "user", "parts": [{"text": content}]})
-            contents.append({"role": "user", "parts": [{"text": text}]})
-            full_contents = contents
-        else:
-            full_contents = [
-                {"role": "user", "parts": [{"text": f"{system_prompt}\n\nUser said: {text}"}]},
-            ]
+        full_contents = await self._load_gemini_contents(session_id, system_prompt, text)
 
         for iteration in range(5):
             try:
@@ -757,7 +1010,8 @@ class IntentParser:
                     ),
                 )
             except Exception as e:
-                yield {"type": "final", "result": {"success": False, "message": f"Gemini error: {str(e)}"}}
+                logging.exception("Gemini error in parse_stream")
+                yield {"type": "final", "result": {"success": False, "message": "AI provider error"}}
                 return
 
             if not response.candidates:
@@ -784,6 +1038,10 @@ class IntentParser:
                     name = fc.name
                     args = dict(fc.args) if fc.args else {}
 
+                    if text_buffer:
+                        yield {"type": "chunk", "content": text_buffer}
+                        text_buffer = ""
+
                     if name == "ask_user" and ask_callback:
                         result = await ask_callback(
                             args.get("question", ""),
@@ -805,11 +1063,11 @@ class IntentParser:
                     text_buffer += part.text or ""
 
             if session_id and has_function_call:
-                if session_id not in self.sessions:
-                    self.sessions[session_id] = []
-                self.sessions[session_id].append({"role": "user", "content": text})
-                self.sessions[session_id].append({"role": "assistant", "content": f"Called tool → {text_buffer[:200]}"})
-                self._store_session(session_id, self.sessions[session_id])
+                await self._append_session_entries(
+                    session_id,
+                    {"role": "user", "content": text},
+                    {"role": "assistant", "content": f"Called tool → {text_buffer[:200]}"},
+                )
 
             if text_buffer:
                 words = text_buffer.split(" ")
@@ -827,11 +1085,11 @@ class IntentParser:
 
             if not has_function_call:
                 if session_id:
-                    if session_id not in self.sessions:
-                        self.sessions[session_id] = []
-                    self.sessions[session_id].append({"role": "user", "content": text})
-                    self.sessions[session_id].append({"role": "assistant", "content": text_buffer or "Done."})
-                    self._store_session(session_id, self.sessions[session_id])
+                    await self._append_session_entries(
+                        session_id,
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": text_buffer or "Done."},
+                    )
                 yield {"type": "final", "result": {"success": True, "message": text_buffer or "Done."}}
                 return
 
@@ -868,38 +1126,23 @@ class IntentParser:
                 )]
             ))
 
-        if session_id and session_id in self.sessions:
-            history = self.sessions[session_id]
-            contents = [{"role": "user", "parts": [{"text": system_prompt}]}]
-            contents.append({"role": "model", "parts": [{"text": "Understood. I will follow all rules including English-only responses, full PC control, and single-tab browser execution."}]})
-            for msg in history:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "system":
-                    continue
-                elif role in ("assistant", "tool"):
-                    contents.append({"role": "model", "parts": [{"text": content}]})
-                elif role == "user":
-                    contents.append({"role": "user", "parts": [{"text": content}]})
-            contents.append({"role": "user", "parts": [{"text": text}]})
-            full_contents = contents
-        else:
-            full_contents = [
-                {"role": "user", "parts": [{"text": f"{system_prompt}\n\nUser said: {text}"}]},
-            ]
+        full_contents = await self._load_gemini_contents(session_id, system_prompt, text)
 
         for iteration in range(5):
             try:
-                response = await client.aio.models.generate_content(
+                response = await asyncio.wait_for(client.aio.models.generate_content(
                     model=GEMINI_MODEL,
                     contents=full_contents,
                     config=genai.types.GenerateContentConfig(
                         tools=gemini_tools,
                         temperature=0.1,
                     ),
-                )
+                ), timeout=30)
+            except asyncio.TimeoutError:
+                return {"success": False, "message": "AI provider timed out"}
             except Exception as e:
-                return {"success": False, "message": f"Gemini error: {str(e)}"}
+                logging.exception("Gemini error in parse")
+                return {"success": False, "message": "AI provider error"}
 
             if not response.candidates:
                 return {"success": False, "message": "Gemini returned no response"}
@@ -939,21 +1182,21 @@ class IntentParser:
                     )}]})
 
                     if session_id:
-                        if session_id not in self.sessions:
-                            self.sessions[session_id] = []
-                        self.sessions[session_id].append({"role": "user", "content": text})
-                        self.sessions[session_id].append({"role": "assistant", "content": f"Called {name}({args}) → {result.get('message', '')}"})
-                        self._store_session(session_id, self.sessions[session_id])
+                        await self._append_session_entries(
+                            session_id,
+                            {"role": "user", "content": text},
+                            {"role": "assistant", "content": f"Called {name}({args}) → {result.get('message', '')}"},
+                        )
                 else:
                     text_response += part.text or ""
 
             if not has_function_call:
                 if session_id:
-                    if session_id not in self.sessions:
-                        self.sessions[session_id] = []
-                    self.sessions[session_id].append({"role": "user", "content": text})
-                    self.sessions[session_id].append({"role": "assistant", "content": text_response or "Done."})
-                    self._store_session(session_id, self.sessions[session_id])
+                    await self._append_session_entries(
+                        session_id,
+                        {"role": "user", "content": text},
+                        {"role": "assistant", "content": text_response or "Done."},
+                    )
                 return {"success": True, "message": text_response or "Done."}
 
         return {"success": False, "message": "Gemini reached maximum iterations."}
@@ -961,7 +1204,7 @@ class IntentParser:
     async def _parse_with_agent(
         self, text: str, executor, ask_callback, client, provider="openai", session_id=None
     ) -> dict:
-        model = "gpt-3.5-turbo"
+        model = self.config.data.get("default_model", "gpt-4o-mini")
         if provider == "opencode":
             model = OPENGODE_MODEL
         elif provider == "openrouter":
@@ -969,24 +1212,20 @@ class IntentParser:
 
         system_prompt = self._get_system_prompt_with_env()
 
-        if session_id and session_id in self.sessions:
-            messages = list(self.sessions[session_id])
-            messages.append({"role": "user", "content": text})
-        else:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": text},
-            ]
+        messages = await self._load_session_messages(session_id, system_prompt, text)
 
         for _ in range(10):
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                temperature=0.1,
-                max_tokens=1024,
-            )
+            try:
+                response = await asyncio.wait_for(client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    tools=TOOLS,
+                    tool_choice="auto",
+                    temperature=0.1,
+                    max_tokens=1024,
+                ), timeout=30)
+            except asyncio.TimeoutError:
+                return {"success": False, "message": "AI provider timed out"}
 
             msg = response.choices[0].message
 
@@ -1016,101 +1255,182 @@ class IntentParser:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": json.dumps(result),
+                        "content": json.dumps(result)[:MAX_TOOL_RESULT_CHARS],
                     })
             else:
                 if session_id:
-                    self._store_session(session_id, messages)
-                    self.sessions[session_id].append({
+                    messages.append({
                         "role": "assistant", "content": msg.content or "Done.",
                     })
+                    await self._store_session(session_id, messages)
                 return {
                     "success": True,
                     "message": msg.content or "Done.",
                 }
 
         if session_id:
-            self._store_session(session_id, messages)
+            await self._store_session(session_id, messages)
         return {"success": False, "message": "Agent reached maximum iterations."}
 
-    def _store_session(self, session_id: str, messages: list[dict]):
-        self.sessions[session_id] = list(messages[-MAX_SESSION_MESSAGES:])
-        if len(self.sessions) > MAX_SESSIONS:
-            oldest = list(self.sessions.keys())[0]
-            del self.sessions[oldest]
+    def _match_volume_command(self, text: str, text_lower: str) -> dict | None:
+        for pattern in [
+            r"^(?:set|turn|change|lower|raise|increase|decrease)\s+(?:the\s+)?volume\s+to\s+(.+)$",
+            r"^(?:volume)\s+to\s+(.+)$",
+            r"^(?:set)\s+volume\s+(.+)$",
+        ]:
+            m = re.match(pattern, text_lower)
+            if m:
+                level = self._parse_volume_level(m.group(1))
+                if level is not None:
+                    return {"action": "set_volume", "params": {"level": level}}
 
-    def _store_session_stream(self, session_id: str, messages: list[dict], user_text: str, assistant_text: str):
-        if session_id not in self.sessions:
-            self.sessions[session_id] = []
-        self.sessions[session_id].append({"role": "user", "content": user_text})
-        self.sessions[session_id].append({"role": "assistant", "content": assistant_text or "Done."})
-        if len(self.sessions[session_id]) > MAX_SESSION_MESSAGES:
-            self.sessions[session_id] = self.sessions[session_id][-MAX_SESSION_MESSAGES:]
-        if len(self.sessions) > MAX_SESSIONS:
-            oldest = list(self.sessions.keys())[0]
-            del self.sessions[oldest]
+        if re.match(r"^(?:mute|mute volume|mute the volume|turn volume off|turn the volume off)$", text_lower):
+            return {"action": "volume_mute", "params": {}}
 
-    def _parse_with_rules(self, text: str) -> dict:
-        text_lower = text.lower().strip()
+        if re.match(r"^(?:volume up|turn (?:the )?volume up|increase (?:the )?volume|make it louder|raise (?:the )?volume)$", text_lower):
+            return {"action": "volume_up", "params": {}}
 
+        if re.match(r"^(?:volume down|turn (?:the )?volume down|decrease (?:the )?volume|make it quieter|lower (?:the )?volume)$", text_lower):
+            return {"action": "volume_down", "params": {}}
+        return None
+
+    def _match_bluetooth_command(self, text: str, text_lower: str) -> dict | None:
+        for pattern, action in [
+            (r"^(?:turn|switch|enable)\s+bluetooth\s+on$", "on"),
+            (r"^(?:turn|switch|disable)\s+bluetooth\s+off$", "off"),
+            (r"^(?:bluetooth\s+status|check\s+bluetooth|is\s+bluetooth\s+on)$", "status"),
+            (r"^(?:scan\s+bluetooth|scan\s+for\s+bluetooth\s+devices)$", "scan"),
+        ]:
+            if re.match(pattern, text_lower):
+                return {"action": "control_bluetooth", "params": {"action": action}}
+        return None
+
+    def _match_open_path_command(self, text: str, text_lower: str) -> dict | None:
         for prefix in ["open folder ", "open file "]:
             if text_lower.startswith(prefix):
                 return {
                     "action": "navigate",
-                    "params": {"path": text[len(prefix) :].strip()},
+                    "params": {"path": text[len(prefix):].strip()},
                 }
+        return None
 
-        for prefix in ["open ", "launch ", "start ", "run "]:
-            if text_lower.startswith(prefix):
-                rest = text[len(prefix) :].strip()
-                if self._looks_like_url(rest):
-                    return {
-                        "action": "browser_navigate",
-                        "params": {"url": rest},
-                    }
+    def _match_browser_command(self, text: str, text_lower: str) -> dict | None:
+        candidates = [text_lower]
+        stripped = re.sub(r"^open\s+(?:the\s+)?browser\s+", "", text_lower, count=1)
+        if stripped != text_lower:
+            candidates.append(stripped)
+
+        for candidate in candidates:
+            if re.match(
+                r"^play\s+(?:the\s+)?first\s+(?:video|result|one)(?:\b.*)?$",
+                candidate,
+            ):
+                return {"action": "yt_play_first_result", "params": {}}
+
+            if re.match(
+                r"^go\s+to\s+youtube\s+and\s+play\s+(?:the\s+)?first\s+(?:video|result|one)(?:\b.*)?$",
+                candidate,
+            ):
+                return {"action": "yt_play_first_result", "params": {}}
+
+            m = re.match(
+                r"^go\s+to\s+youtube\s+and\s+search\s+(?:for\s+)?(.+)$",
+                candidate,
+            )
+            if m:
+                return {"action": "yt_search", "params": {"query": m.group(1).strip()}}
+
+            m = re.match(
+                r"^open(?:\s+of)?\s+youtube\s+and\s+search\s+(?:for\s+)?(.+?)\s+and\s+play\s+(?:the\s+)?first\s+video(?:\s+that\s+comes(?:\s+up)?)?$",
+                candidate,
+            )
+            if m:
+                return {"action": "yt_play", "params": {"query": m.group(1).strip()}}
+
+            m = re.match(
+                r"^open(?:\s+of)?\s+youtube\s+and\s+search\s+(?:for\s+)?(.+)$",
+                candidate,
+            )
+            if m:
+                return {"action": "yt_search", "params": {"query": m.group(1).strip()}}
+
+            m = re.match(
+                r"^open(?:\s+of)?\s+youtube\s+and\s+play\s+(.+)$",
+                candidate,
+            )
+            if m:
+                return {"action": "yt_play", "params": {"query": m.group(1).strip()}}
+
+            m = re.match(
+                r"^open\s+(google|bing|duckduckgo)\s+and\s+search\s+(?:for\s+)?(.+)$",
+                candidate,
+            )
+            if m:
                 return {
-                    "action": "open_app",
-                    "params": {"name": rest},
+                    "action": "browser_search",
+                    "params": {"engine": m.group(1), "query": m.group(2).strip()},
                 }
 
+            m = re.match(
+                r"^open\s+(?:the\s+)?browser\s+and\s+play\s+(.+?)(?:\s+(?:on|from)\s+youtube)?$",
+                candidate,
+            )
+            if m:
+                return {"action": "yt_play", "params": {"query": m.group(1).strip()}}
+
+            m = re.match(
+                r"^open\s+(?:the\s+)?browser\s+and\s+search\s+(?:for\s+)?(.+?)(?:\s+(?:on|using)\s+(google|bing|duckduckgo))?$",
+                candidate,
+            )
+            if m:
+                return {
+                    "action": "browser_search",
+                    "params": {"query": m.group(1).strip(), "engine": m.group(2) or "google"},
+                }
+
+            m = re.match(r"^open\s+(?:the\s+)?browser\s+and\s+go\s+to\s+(.+)$", candidate)
+            if m:
+                dest = m.group(1).strip()
+                if self._looks_like_url(dest):
+                    return {"action": "browser_navigate", "params": {"url": dest}}
+        return None
+
+    def _match_navigation_command(self, text: str, text_lower: str) -> dict | None:
         m = re.match(r"^(?:go to|navigate to)\s+(.+)$", text_lower)
-        if m:
-            dest = m.group(1).strip()
-            if self._looks_like_url(dest):
-                return {"action": "browser_navigate", "params": {"url": dest}}
-            return {"action": "navigate", "params": {"path": dest}}
+        if not m:
+            return None
+        dest = m.group(1).strip()
+        if self._looks_like_url(dest):
+            return {"action": "browser_navigate", "params": {"url": dest}}
+        return {"action": "navigate", "params": {"path": dest}}
 
-        m = re.match(
-            r"^(?:play|start)\s+(.+?)(?:\s+(?:on|from)\s+youtube)?$", text_lower
-        )
+    def _match_youtube_command(self, text: str, text_lower: str) -> dict | None:
+        m = re.match(r"^play\s+(.+?)(?:\s+(?:on|from)\s+youtube)?$", text_lower)
         if m:
-            return {
-                "action": "yt_play",
-                "params": {"query": m.group(1).strip()},
-            }
+            return {"action": "yt_play", "params": {"query": m.group(1).strip()}}
 
-        m = re.match(
-            r"^(?:search\s+(?:for\s+)?)?(.+?)\s+on\s+youtube$", text_lower
-        )
+        m = re.match(r"^start\s+(.+?)\s+(?:on|from)\s+youtube$", text_lower)
         if m:
-            return {
-                "action": "yt_play",
-                "params": {"query": m.group(1).strip()},
-            }
+            return {"action": "yt_play", "params": {"query": m.group(1).strip()}}
 
+        m = re.match(r"^(?:search\s+(?:for\s+)?)?(.+?)\s+on\s+youtube$", text_lower)
+        if m:
+            return {"action": "yt_play", "params": {"query": m.group(1).strip()}}
+        return None
+
+    def _match_search_command(self, text: str, text_lower: str) -> dict | None:
         m = re.match(
             r"^search\s+(?:for\s+)?(.+?)(?:\s+(?:on|using)\s+(google|bing|duckduckgo))?$",
             text_lower,
         )
-        if m:
-            return {
-                "action": "browser_search",
-                "params": {
-                    "query": m.group(1).strip(),
-                    "engine": m.group(2) or "google",
-                },
-            }
+        if not m:
+            return None
+        return {
+            "action": "browser_search",
+            "params": {"query": m.group(1).strip(), "engine": m.group(2) or "google"},
+        }
 
+    def _match_list_command(self, text: str, text_lower: str) -> dict | None:
         for pattern in [
             r"^(?:list|show|what'?s in)\s+(.+)$",
             r"^(?:list|show|what'?s in)$",
@@ -1119,55 +1439,66 @@ class IntentParser:
             if m:
                 path = m.group(1) if m.lastindex else "."
                 return {"action": "list_dir", "params": {"path": path}}
+        return None
 
+    def _match_email_command(self, text: str, text_lower: str) -> dict | None:
         m = re.match(
             r"^(?:send\s+)?(?:an?\s+)?email\s+to\s+(.+?)(?:\s+with\s+subject\s+(.+?)(?:\s+and\s+(?:body\s+)?(.+))?)?$",
             text_lower,
         )
-        if m:
-            return {
-                "action": "send_email",
-                "params": {
-                    "to": m.group(1),
-                    "subject": m.group(2) or "No Subject",
-                    "body": m.group(3) or "",
-                },
-            }
+        if not m:
+            return None
+        return {
+            "action": "send_email",
+            "params": {"to": m.group(1), "subject": m.group(2) or "No Subject", "body": m.group(3) or ""},
+        }
 
-        m = re.match(
-            r"^(?:create|make|new)\s+file\s+(.+?)(?:\s+with\s+content\s+(.+))?$",
-            text_lower,
-        )
-        if m:
-            return {
-                "action": "create_file",
-                "params": {"path": m.group(1), "content": m.group(2) or ""},
-            }
+    def _match_create_file_command(self, text: str, text_lower: str) -> dict | None:
+        m = re.match(r"^(?:create|make|new)\s+file\s+(.+?)(?:\s+with\s+content\s+(.+))?$", text_lower)
+        if not m:
+            return None
+        return {
+            "action": "create_file",
+            "params": {"path": m.group(1), "content": m.group(2) or ""},
+        }
 
-        m = re.match(
-            r"^(?:create|make|new)\s+(?:folder|directory)\s+(.+)$", text_lower
-        )
-        if m:
-            return {"action": "create_folder", "params": {"path": m.group(1)}}
+    def _match_create_folder_command(self, text: str, text_lower: str) -> dict | None:
+        m = re.match(r"^(?:create|make|new)\s+(?:folder|directory)\s+(.+)$", text_lower)
+        if not m:
+            return None
+        return {"action": "create_folder", "params": {"path": m.group(1)}}
 
+    def _match_delete_command(self, text: str, text_lower: str) -> dict | None:
         m = re.match(r"^(?:delete|remove)\s+(.+)$", text_lower)
-        if m:
-            return {"action": "delete", "params": {"path": m.group(1)}}
+        if not m:
+            return None
+        return {"action": "delete", "params": {"path": m.group(1)}}
 
+    def _match_copy_command(self, text: str, text_lower: str) -> dict | None:
         m = re.match(r"^(?:copy)\s+(.+?)\s+to\s+(.+)$", text_lower)
-        if m:
-            return {
-                "action": "copy",
-                "params": {"source": m.group(1), "destination": m.group(2)},
-            }
+        if not m:
+            return None
+        return {"action": "copy", "params": {"source": m.group(1), "destination": m.group(2)}}
 
+    def _match_move_command(self, text: str, text_lower: str) -> dict | None:
         m = re.match(r"^(?:move)\s+(.+?)\s+to\s+(.+)$", text_lower)
-        if m:
-            return {
-                "action": "move",
-                "params": {"source": m.group(1), "destination": m.group(2)},
-            }
+        if not m:
+            return None
+        return {"action": "move", "params": {"source": m.group(1), "destination": m.group(2)}}
 
+    def _match_app_command(self, text: str, text_lower: str) -> dict | None:
+        for prefix in ["open ", "launch ", "start ", "run "]:
+            if text_lower.startswith(prefix):
+                rest = text[len(prefix):].strip()
+                if self._looks_like_url(rest):
+                    return {"action": "browser_navigate", "params": {"url": rest}}
+                return {"action": "open_app", "params": {"name": rest}}
+        return None
+
+    def _parse_with_rules(self, text: str) -> dict:
+        command = self._match_deterministic_command(text)
+        if command:
+            return command
         return {"action": "open_app", "params": {"name": text}}
 
     def _looks_like_url(self, text: str) -> bool:

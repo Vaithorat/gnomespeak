@@ -1,4 +1,4 @@
-import {ResultMessage, QuestionMessage, ConnectionStatus, StreamChunkMessage, StreamResultMessage} from '../types';
+import {ResultMessage, QuestionMessage, ConnectionStatus, StreamChunkMessage, StreamResultMessage, CommandMessage} from '../types';
 
 type ResultCallback = (result: ResultMessage) => void;
 type QuestionCallback = (question: QuestionMessage) => void;
@@ -6,6 +6,12 @@ type StatusCallback = (status: ConnectionStatus) => void;
 type ConnectedCallback = (serverUrl: string) => void;
 type StreamChunkCallback = (chunk: StreamChunkMessage) => void;
 type StreamResultCallback = (result: StreamResultMessage) => void;
+type Unsubscribe = () => void;
+
+export type SendStatus = {
+  ok: boolean;
+  error?: string;
+};
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
@@ -19,36 +25,43 @@ export class WebSocketService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts: number = 0;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
-  private resultCallback: ResultCallback | null = null;
-  private questionCallback: QuestionCallback | null = null;
-  private statusCallback: StatusCallback | null = null;
-  private connectedCallback: ConnectedCallback | null = null;
-  private streamChunkCallback: StreamChunkCallback | null = null;
-  private streamResultCallback: StreamResultCallback | null = null;
+  private resultCallbacks = new Set<ResultCallback>();
+  private questionCallbacks = new Set<QuestionCallback>();
+  private statusCallbacks = new Set<StatusCallback>();
+  private connectedCallbacks = new Set<ConnectedCallback>();
+  private streamChunkCallbacks = new Set<StreamChunkCallback>();
+  private streamResultCallbacks = new Set<StreamResultCallback>();
   private shouldReconnect: boolean = true;
+  private reconnectBlockedByInvalidUrl: boolean = false;
 
-  onResult(callback: ResultCallback): void {
-    this.resultCallback = callback;
+  onResult(callback: ResultCallback): Unsubscribe {
+    this.resultCallbacks.add(callback);
+    return () => this.resultCallbacks.delete(callback);
   }
 
-  onQuestion(callback: QuestionCallback): void {
-    this.questionCallback = callback;
+  onQuestion(callback: QuestionCallback): Unsubscribe {
+    this.questionCallbacks.add(callback);
+    return () => this.questionCallbacks.delete(callback);
   }
 
-  onStatusChange(callback: StatusCallback): void {
-    this.statusCallback = callback;
+  onStatusChange(callback: StatusCallback): Unsubscribe {
+    this.statusCallbacks.add(callback);
+    return () => this.statusCallbacks.delete(callback);
   }
 
-  onConnected(callback: ConnectedCallback): void {
-    this.connectedCallback = callback;
+  onConnected(callback: ConnectedCallback): Unsubscribe {
+    this.connectedCallbacks.add(callback);
+    return () => this.connectedCallbacks.delete(callback);
   }
 
-  onStreamChunk(callback: StreamChunkCallback): void {
-    this.streamChunkCallback = callback;
+  onStreamChunk(callback: StreamChunkCallback): Unsubscribe {
+    this.streamChunkCallbacks.add(callback);
+    return () => this.streamChunkCallbacks.delete(callback);
   }
 
-  onStreamResult(callback: StreamResultCallback): void {
-    this.streamResultCallback = callback;
+  onStreamResult(callback: StreamResultCallback): Unsubscribe {
+    this.streamResultCallbacks.add(callback);
+    return () => this.streamResultCallbacks.delete(callback);
   }
 
   connect(url: string, apiKey: string, provider: string = 'openai'): void {
@@ -56,6 +69,7 @@ export class WebSocketService {
     this.apiKey = apiKey;
     this.provider = provider;
     this.shouldReconnect = true;
+    this.reconnectBlockedByInvalidUrl = false;
     this.reconnectAttempts = 0;
     this._connect();
   }
@@ -65,12 +79,12 @@ export class WebSocketService {
     this._cleanup();
   }
 
-  send(text: string, sessionId?: string): void {
+  send(text: string, sessionId?: string, requestId?: string, alternatives?: string[]): SendStatus {
     if (this.ws?.readyState !== WebSocket.OPEN) {
-      return;
+      return {ok: false, error: 'Not connected to server.'};
     }
 
-    const msg: Record<string, string> = {
+    const msg: CommandMessage = {
       type: 'command',
       text,
       api_key: this.apiKey,
@@ -79,19 +93,29 @@ export class WebSocketService {
     if (sessionId) {
       msg.session_id = sessionId;
     }
-
-    this.ws.send(JSON.stringify(msg));
-  }
-
-  sendWithSession(text: string, sessionId: string): void {
-    this.send(text, sessionId);
-  }
-
-  sendAnswer(id: string, text: string): void {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
-      return;
+    if (requestId) {
+      msg.request_id = requestId;
     }
-    this.ws.send(JSON.stringify({type: 'answer', id, text}));
+    if (alternatives && alternatives.length > 0) {
+      msg.alternatives = alternatives;
+    }
+
+    return this._sendJson(msg);
+  }
+
+  sendWithSession(text: string, sessionId: string, requestId?: string, alternatives?: string[]): SendStatus {
+    return this.send(text, sessionId, requestId, alternatives);
+  }
+
+  sendAnswer(id: string, text: string, requestId?: string): SendStatus {
+    if (this.ws?.readyState !== WebSocket.OPEN) {
+      return {ok: false, error: 'Not connected to server.'};
+    }
+    const msg: Record<string, string> = {type: 'answer', id, text};
+    if (requestId) {
+      msg.request_id = requestId;
+    }
+    return this._sendJson(msg);
   }
 
   private _normalizeUrl(raw: string): string {
@@ -108,9 +132,29 @@ export class WebSocketService {
     return `ws://${u}`;
   }
 
+  private _isValidUrl(raw: string): boolean {
+    try {
+      const normalized = this._normalizeUrl(raw);
+      const parsed = new URL(normalized);
+      return (
+        (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') &&
+        parsed.hostname.length > 0
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private _connect(): void {
     this._cleanup();
     this._notifyStatus('connecting');
+
+    if (!this._isValidUrl(this.url)) {
+      this.reconnectBlockedByInvalidUrl = true;
+      this.shouldReconnect = false;
+      this._notifyStatus('error');
+      return;
+    }
 
     const wsUrl = this._normalizeUrl(this.url);
 
@@ -120,7 +164,7 @@ export class WebSocketService {
       this.ws.onopen = () => {
         this.reconnectAttempts = 0;
         this._notifyStatus('connected');
-        this.connectedCallback?.(this._normalizeUrl(this.url));
+        this.connectedCallbacks.forEach(callback => callback(this._normalizeUrl(this.url)));
         this._startPing();
       };
 
@@ -139,13 +183,21 @@ export class WebSocketService {
           if (!raw) { return; }
           const data = JSON.parse(raw);
           if (data.type === 'question') {
-            this.questionCallback?.(data);
+            if (typeof data.id === 'string' && typeof data.message === 'string' && Array.isArray(data.options)) {
+              this.questionCallbacks.forEach(callback => callback(data));
+            }
           } else if (data.type === 'stream_chunk') {
-            this.streamChunkCallback?.(data);
+            if (typeof data.content === 'string') {
+              this.streamChunkCallbacks.forEach(callback => callback(data));
+            }
           } else if (data.type === 'stream_result') {
-            this.streamResultCallback?.(data);
+            if (typeof data.message === 'string' && typeof data.success === 'boolean') {
+              this.streamResultCallbacks.forEach(callback => callback(data));
+            }
           } else if (data.type === 'result') {
-            this.resultCallback?.(data);
+            if (typeof data.message === 'string' && typeof data.success === 'boolean') {
+              this.resultCallbacks.forEach(callback => callback(data));
+            }
           }
         } catch {
           // Ignore invalid messages
@@ -158,7 +210,7 @@ export class WebSocketService {
   }
 
   private _scheduleReconnect(): void {
-    if (!this.shouldReconnect) {
+    if (!this.shouldReconnect || this.reconnectBlockedByInvalidUrl) {
       return;
     }
 
@@ -205,8 +257,17 @@ export class WebSocketService {
     }
   }
 
+  private _sendJson(payload: object): SendStatus {
+    try {
+      this.ws?.send(JSON.stringify(payload));
+      return {ok: true};
+    } catch {
+      return {ok: false, error: 'Failed to send message.'};
+    }
+  }
+
   private _notifyStatus(status: ConnectionStatus): void {
-    this.statusCallback?.(status);
+    this.statusCallbacks.forEach(callback => callback(status));
   }
 }
 

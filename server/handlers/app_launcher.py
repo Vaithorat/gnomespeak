@@ -66,10 +66,9 @@ class AppLauncher:
     def find_app(self, name: str):
         name_lower = name.lower().strip()
 
-        if self.env_model:
-            cached = self.env_model.get_app_path(name_lower)
-            if cached:
-                return cached
+        cached = self.resolve_cached(name_lower)
+        if cached:
+            return cached
 
         candidate_names = [name_lower]
         if name_lower in self.aliases:
@@ -96,6 +95,14 @@ class AppLauncher:
             result = self._search_name(try_name)
             if result:
                 return result
+        return None
+
+    def resolve_cached(self, name: str):
+        name_lower = name.lower().strip()
+        if self.env_model:
+            cached = self.env_model.get_app_path(name_lower)
+            if cached:
+                return cached
         return None
 
     def _search_with_powershell(self, name: str):
@@ -148,9 +155,9 @@ class AppLauncher:
 
         return None
 
-    def launch(self, name: str) -> dict:
+    def launch(self, name: str, resolved_path: str = "") -> dict:
         name = name.strip().strip('"').strip("'")
-        exe_path = self.find_app(name)
+        exe_path = resolved_path or self.find_app(name)
 
         if exe_path:
             try:
@@ -162,11 +169,7 @@ class AppLauncher:
                     "message": f"Failed to open {name}: {str(e)}",
                 }
 
-        try:
-            os.startfile(name)
-            return {"success": True, "message": f"Attempted to open {name}"}
-        except Exception as e:
-            return {
-                "success": False,
-                "message": f"Could not open {name}: {str(e)}",
-            }
+        return {
+            "success": False,
+            "message": f"App not found: {name}",
+        }

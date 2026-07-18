@@ -1,17 +1,18 @@
 # VoiceTalk
 
-Voice-controlled interface between Android (React Native) and Windows (Python). Speak commands on your phone — open apps, browse files, send emails, control Bluetooth, play music, play YouTube videos, search the web, and more on your PC.
+Voice-controlled interface between Android (React Native) and Windows (Python). Speak commands on your phone to open apps, browse files, send emails, control supported Bluetooth radio actions, play music, open YouTube videos, search the web, and more on your PC.
 
 ## Features
 
-- **Voice commands** — On-device speech-to-text (works offline)
+- **Voice commands** — On-device speech-to-text with device-locale recognition and alternative transcript fallback
 - **3 interaction modes** — Push-to-talk, continuous conversation, or text chat
 - **4 AI providers** — OpenAI, Gemini, OpenCode, OpenRouter (free models available)
-- **YouTube playback** — Search and auto-play videos via Playwright browser automation
+- **YouTube playback** — Search and open videos via Playwright browser automation, with explicit reporting when autoplay is blocked
 - **File operations** — Navigate, list, create, delete, copy, move files and folders
 - **App launcher** — Launch any app via Start Menu, common directories, or PATH
-- **Web browsing** — Open URLs, search Google/Bing/DuckDuckGo
-- **Bluetooth control** — Turn radio on/off, scan for devices
+- **Web browsing** — Open URLs and searches in your system default browser; reserve Playwright only for automation flows
+- **Deterministic command routing** — Common browser, YouTube, volume, Bluetooth, file, and app phrases execute without LLM guesswork
+- **Bluetooth control** — Turn the radio on/off when supported and scan for devices
 - **Media & volume** — Play local music, set volume, mute, keyboard media keys
 - **Email** — Send via configurable SMTP (Gmail, Outlook, any provider)
 - **Clarification dialog** — Agent asks you questions on your phone when it needs more info
@@ -42,7 +43,15 @@ The server starts on `ws://0.0.0.0:8765` automatically. A GUI window shows the c
 ```
 dist/VoiceTalkServer.exe
 ```
-No Python installation needed. Playwright Chromium is bundled.
+This is the supported packaged GUI entry point. No Python installation is needed for core voice/file/app control.
+
+Browser automation is not bundled inside the EXE itself. VoiceTalk first uses your system default browser for simple open/search/navigation commands. For browser automation flows, it falls back to a VoiceTalk-managed browser profile and only installs Playwright Chromium as a last resort into `%APPDATA%\VoiceTalk\ms-playwright`.
+
+Windows packaging notes:
+- First launch may show SmartScreen for unsigned internal builds. Only bypass it for a build you trust.
+- Allow the app through the Windows firewall on Private networks so the phone can reach `ws://<pc-lan-ip>:8765`.
+- The GUI writes rotating logs to `%APPDATA%\VoiceTalk\logs\voicetalk-server.log` and lets you export them from the `Export Logs` button.
+- Browser-powered open/search commands prefer your normal signed-in browser first. Only automation flows such as opening and trying to autoplay a YouTube video use the VoiceTalk-managed browser runtime.
 
 ### Client Setup (Android Phone)
 
@@ -50,6 +59,8 @@ No Python installation needed. Playwright Chromium is bundled.
 ```powershell
 adb install -r voicetalk/client/android/app/build/outputs/apk/debug/app-debug.apk
 ```
+
+This debug APK is for local development only. Do not distribute it as a release build.
 
 **Option B: Build from source**
 ```bash
@@ -95,7 +106,9 @@ Once installed and configured:
 
 | Say... | What happens |
 |--------|-------------|
-| *"Play Golmaal 3 on YouTube"* | Searches YouTube, opens the video, auto-plays it |
+| *"Play Golmaal 3 on YouTube"* | Searches YouTube, opens the video, and reports whether autoplay started |
+| *"Open YouTube and search for Taarak Mehta"* | Opens YouTube search results in your default browser |
+| *"Play the first video"* | Reuses the most recent YouTube search query and opens the first matching result |
 | *"Search for React Native tutorials"* | Opens Google search results |
 | *"Open chrome"* | Launches Chrome browser |
 | *"Open youtube.com"* | Opens YouTube in browser |
@@ -144,8 +157,7 @@ voicetalk/
 │   │   ├── email_sender.py        # SMTP email
 │   │   ├── bluetooth_control.py   # BT radio & devices
 │   │   └── media_player.py        # Local playback & volume
-│   ├── windows_gui.py             # CustomTkinter GUI wrapper
-│   ├── windows_app.py             # System tray icon wrapper
+│   ├── windows_gui.py             # Supported desktop server entry point
 │   └── requirements.txt
 ├── openspec/                      # Specifications (21 capabilities)
 │   └── specs/
@@ -158,21 +170,98 @@ voicetalk/
 
 | Provider | Model | Free? | Notes |
 |----------|-------|-------|-------|
-| OpenAI | GPT-3.5-turbo | No | Full agent loop, 10 iterations |
+| OpenAI | gpt-4o-mini | No | Full agent loop, 10 iterations |
 | Gemini | Gemini 2.0 Flash | Yes (limited) | Native function calling, 5 iterations |
-| OpenCode | deepseek-v4-flash | Yes | Via opencode.ai API |
-| OpenRouter | gemini-2.0-flash-lite | Yes | Via openrouter.ai |
+| OpenCode | deepseek-v4-flash-free | Yes | Via opencode.ai Zen API |
+| OpenRouter | nvidia/nemotron-nano-9b-v2:free | Yes | Via openrouter.ai |
 
 At least one provider API key is required. The server auto-detects which provider to use based on which key is configured.
 
 ## Requirements
 
-- **Server:** Windows 10+, Python 3.10+, Playwright Chromium (auto-installed)
+- **Server:** Windows 10+, Python 3.10+ for source setup, Playwright Chromium for browser features
 - **Client:** Android 8+ (API 26+), Node.js 18+
 - **Network:** Phone and PC on same local network
+
+## Supported Versions
+
+- **Windows:** Windows 10 or later
+- **Python (source server):** Python 3.12 is the CI-tested version; Python 3.10+ may work, but releases are validated on 3.12
+- **Node.js (client source build):** Node 20 is the CI-tested version
+- **Android:** Android 8+ (API 26+)
 
 ## Security
 
 - **API keys & SMTP credentials** encrypted at rest using Fernet (PBKDF2-HMAC-SHA256, 600k iterations)
-- **Local network only** — WebSocket runs on your LAN, no internet exposure
-- **Session limits** — Max 50 sessions, 100 messages per session to prevent memory exhaustion
+- **Trusted LAN only** — WebSocket traffic is cleartext `ws://`; do not expose this server to the internet or untrusted networks because provider API keys travel over the socket
+- **Session limits** — Max 50 sessions, 30 messages per session to prevent memory exhaustion
+
+## Configuration And Recovery
+
+- **Config location:** `%APPDATA%\VoiceTalk\config.json`
+- **Master key:** `%APPDATA%\VoiceTalk\.master`
+- **Master-key backup:** `%APPDATA%\VoiceTalk\.master.bak`
+- **Logs:** `%APPDATA%\VoiceTalk\logs\voicetalk-server.log`
+- **Diagnostics bundles:** `%APPDATA%\VoiceTalk\diagnostics\`
+
+If the GUI says the saved configuration could not be unlocked:
+
+1. Use **Restore Backup** first if `.master.bak` exists.
+2. Use **Reset Saved Secrets** only if you accept losing stored API keys and SMTP credentials.
+3. For CLI use, restore `.master` from `.master.bak`, then rerun `python server.py`.
+
+## Firewall, Updates, Backup, Rollback
+
+- Allow the server through **Windows Firewall on Private networks only**.
+- Keep a backup copy of `%APPDATA%\VoiceTalk\config.json`, `.master`, and `.master.bak` before upgrades.
+- When updating from source, reinstall dependencies with `pip install -r requirements.txt` and rerun `playwright install chromium` if browser features stop working.
+- When updating the Android app, increment `versionCode` and `versionName` before building the next release artifact.
+- If a new build regresses, roll back to the previous EXE or Android artifact together with the matching config/master-key backup.
+
+## Diagnostics Bundle
+
+Create a support bundle from either path:
+
+- GUI: click **Export Diagnostics**
+- CLI/source server:
+
+```powershell
+cd voicetalk/server
+python diagnostics.py
+```
+
+The bundle includes:
+
+- server version
+- config schema version
+- Android build version from source checkout when available
+- sanitized server logs
+- dependency versions
+- local TCP connectivity test output for the configured host/port
+
+Use this bundle plus the exported logs when reporting install, connection, or upgrade problems.
+
+## Android Release Builds
+
+Release signing is not checked into the repo. Release builds fail unless you provide signing values via environment variables or Gradle properties:
+
+- `VOICETALK_RELEASE_STORE_FILE`
+- `VOICETALK_RELEASE_STORE_PASSWORD`
+- `VOICETALK_RELEASE_KEY_ALIAS`
+- `VOICETALK_RELEASE_KEY_PASSWORD`
+
+Recommended distribution artifact:
+
+```powershell
+cd voicetalk/client/android
+.\gradlew.bat bundleRelease
+```
+
+This produces an Android App Bundle (AAB) for distribution. Use an APK only for documented sideloading:
+
+```powershell
+cd voicetalk/client/android
+.\gradlew.bat assembleRelease
+```
+
+Release builds enable R8/resource shrinking and do not include Flipper. Increment `versionCode` and `versionName` as part of the release process.

@@ -22,13 +22,18 @@ class EnvironmentModel:
 
     async def refresh_if_stale(self):
         if time.time() - self._last_full_refresh > self._refresh_interval:
-            asyncio.create_task(self._full_refresh())
+            async with self._lock:
+                if time.time() - self._last_full_refresh > self._refresh_interval:
+                    await self._do_refresh()
 
     async def _full_refresh(self):
         async with self._lock:
-            await self._scan_desktop()
-            await self._scan_installed_apps()
-            self._last_full_refresh = time.time()
+            await self._do_refresh()
+
+    async def _do_refresh(self):
+        await self._scan_desktop()
+        await self._scan_installed_apps()
+        self._last_full_refresh = time.time()
 
     async def refresh_folder(self, path: str):
         async with self._lock:

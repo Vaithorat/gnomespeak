@@ -23,13 +23,17 @@ const STATUS_LABELS: Record<ConnectionStatusType, string> = {
 };
 
 export const ConnectionStatus: React.FC<Props> = ({status, serverUrl, compact}) => (
-  <View style={[styles.container, compact ? styles.containerCompact : null]}>
+  <View
+    accessible
+    accessibilityRole="summary"
+    accessibilityLabel={`Connection status: ${STATUS_LABELS[status]}${status === 'connected' ? `. Server ${serverUrl}` : ''}`}
+    style={[styles.container, compact ? styles.containerCompact : null]}>
     <View style={styles.dotWrap}>
       <View style={[styles.dot, {backgroundColor: STATUS_COLORS[status]}]} />
     </View>
     {!compact ? (
       <>
-        <Text style={styles.text}>{STATUS_LABELS[status]}</Text>
+        <Text style={styles.text} accessibilityLiveRegion="polite">{STATUS_LABELS[status]}</Text>
         {status === 'connected' ? (
           <Text style={styles.url}>{serverUrl}</Text>
         ) : null}

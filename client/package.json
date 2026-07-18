@@ -5,7 +5,9 @@
   "scripts": {
     "android": "react-native run-android",
     "start": "react-native start",
-    "lint": "eslint . --ext .ts,.tsx"
+    "lint": "eslint . --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "test": "jest --runInBand"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "^1.21.0",
@@ -22,7 +24,12 @@
     "@react-native/eslint-config": "^0.73.2",
     "@react-native/metro-config": "^0.86.0",
     "@react-native/typescript-config": "^0.73.1",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^26.1.1",
     "@types/react": "^18.2.48",
+    "@types/react-test-renderer": "^18.0.7",
+    "jest": "^29.7.0",
+    "react-test-renderer": "18.2.0",
     "typescript": "^5.3.3"
   }
 }

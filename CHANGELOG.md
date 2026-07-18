@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.2.0] — 2026-07-19
+
+### Added
+- **Deterministic-first command routing** — Common browser, YouTube, volume, Bluetooth, app, file, and email phrases now bypass the LLM and execute through typed internal commands first.
+- **Deterministic command sequences** — Phrases such as `set volume to 100% and then open YouTube and search for ...` now execute as ordered multi-step command sequences.
+- **Per-request client routing tests** — Added client Jest coverage for WebSocket routing, conversation request handling, HomeScreen send-failure behavior, and RecordButton lifecycle cleanup.
+- **Server diagnostics bundle** — `server/diagnostics.py` creates a support bundle with version info, config paths, dependency versions, connectivity checks, and sanitized logs.
+- **Browser runtime bootstrap** — The Windows GUI can install the Playwright Chromium runtime on demand, and browser automation can auto-bootstrap it once when missing.
+
+### Changed
+- **Browser preference order** — Simple `open/search/go to` browser actions now prefer the system default browser. Playwright is reserved for automation flows like opening and trying to autoplay a YouTube video.
+- **Windows packaged server** — `windows_gui.py` is the supported desktop entry point, the packaged app is single-instance guarded, and the PyInstaller spec now builds a GUI app without a console window.
+- **OpenCode default model** — Switched to the documented free Zen model `deepseek-v4-flash-free`.
+- **OpenRouter default model** — Switched to `nvidia/nemotron-nano-9b-v2:free`.
+- **Android release pipeline** — Release builds now require explicit signing credentials, enable shrinking/optimization, and exclude Flipper from release artifacts.
+- **Client speech handling** — Android STT now uses the device locale and forwards up to 5 alternative transcripts to the server for deterministic matching.
+- **Session history** — Reduced stored session history from 100 to 30 messages with tool-result truncation.
+
+### Fixed
+- **Request correlation** — GUI server path, client streams, and clarification answers now consistently propagate `request_id` so overlapping requests stay isolated.
+- **Volume control** — Absolute volume commands now bypass the LLM and use direct pycaw endpoint volume control instead of repeated step-up key events.
+- **Browser command phrasing** — Added deterministic handling for natural phrases like `open youtube and search for ...`, `go to youtube and search ...`, and `play the first video` after a YouTube search.
+- **Browser fallback behavior** — When `yt-dlp` cannot find a direct match, YouTube search fallback opens in the default browser instead of a Playwright `about:blank`/automation path.
+- **Windows GUI lifecycle** — Fixed Start/Stop/Settings button wiring, request-aware logging, rotating file logs, log export, diagnostics export, and recovery flows for encrypted config.
+- **Client stuck-listening regression** — Final deterministic results now clear listening state and still render even if request tracking was lost.
+- **Config durability** — `%APPDATA%\VoiceTalk\config.json` is now the real relative default, `.master.bak` recovery is preserved, and config/master writes are process-locked and atomic.
+- **Truthfulness gaps** — Removed unsupported Bluetooth connect/disconnect claims, corrected autoplay behavior messaging, and documented the actual packaged browser/runtime behavior.
+
 ## [2.1.0] — 2026-07-15
 
 ### Added
