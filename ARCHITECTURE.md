@@ -97,15 +97,20 @@ Two operational notes, both learned the hard way:
 
 ## Server
 
-`vt/server.py` is aiohttp with three routes:
+`vt/server.py` is aiohttp with these routes:
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
-| `GET /` | none | Serves the UI; `?t=<token>` stores the token and reloads |
-| `GET /api/state` | token | Current snapshot as JSON |
-| `GET /api/apps` | token | Installed apps, optionally filtered by `?q=` |
-| `GET /api/youtube` | token | YouTube videos, searched by `?q=` |
-| `POST /api/do` | token | `{target, action, value?}` → `{ok, message}` |
+| `GET /` | none | Serves the UI; `?t=<token>` stores the token and reloads; `?p=<code>` opens pairing |
+| `GET /api/session` | optional | Who am I, and do I need to pair? Always 200. |
+| `POST /api/pair` | code | Trade a one-time code for a device credential |
+| `POST /api/pair/self` | token | An authenticated session mints its own device (zero-friction LAN upgrade) |
+| `GET /api/devices` | device | List paired devices (no secrets) |
+| `POST /api/devices/revoke` | device | Drop a device credential |
+| `GET /api/state` | token/device | Current snapshot as JSON |
+| `GET /api/apps` | token/device | Installed apps, optionally filtered by `?q=` |
+| `GET /api/youtube` | token/device | YouTube videos, searched by `?q=` |
+| `POST /api/do` | token/device | `{target, action, value?}` → `{ok, message}` |
 
 **Why installed apps are not in the snapshot.** They are a different kind of
 data: hundreds of rows that change about once a week, against a snapshot of a
@@ -163,26 +168,44 @@ No code can lift the policy: the fix is to start `vt` from an ordinary terminal.
 
 ## Security model
 
-VoiceTalk assumes a trusted LAN and defends the boundary at three points.
+Two tiers of access, deliberately unequal:
+
+- **LAN** — the startup token in the URL is enough. It travels in a bookmark
+  and a QR code, which is fine for a network you already control.
+- **Remote** — the token is not accepted at all. The caller must present a
+  paired-device credential, and a device is paired once, from a code that only
+  ever appears on this PC's own terminal.
+
+That split is the whole security model: exposing the public URL leaks nothing,
+because the URL is not a credential off-network.
 
 1. **Token auth.** A 22-character `secrets.token_urlsafe(16)` is generated per
-   run and required on every `/api/*` request, compared with
-   `secrets.compare_digest`. `--no-token` disables it and says so loudly.
-2. **No arbitrary execution.** `/api/do` takes a target id and an action id, not
+   run and required on every `/api/*` request from the LAN, compared with
+   `secrets.compare_digest`. `--no-token` disables it for LAN callers.
+2. **Device pairing.** `vt pair` mints a 31^10-entropy, single-use, 10-minute
+   code. Redeeming it registers a device with a 32-byte random secret (SHA-256
+   hashed for storage). The device presents `X-VT-Device` + `X-VT-Secret`
+   headers on every request. Max 32 devices.
+3. **Rate limiting.** 5 failed auth attempts per IP triggers a 15-minute
+   lockout. Pairing attempts are rate-limited globally (30/hour).
+4. **Audit log.** Every authenticated action and rejected attempt is recorded
+   in `~/.local/state/voicetalk/audit.log` as JSONL.
+5. **No arbitrary execution.** `/api/do` takes a target id and an action id, not
    a command. Configured commands are addressed by id; their `run` must be an
    argv list, and a string is rejected at load time — `subprocess` is never
    invoked with `shell=True`.
-3. **Untrusted text stays text.** Window titles and MPRIS metadata are whatever
+6. **Untrusted text stays text.** Window titles and MPRIS metadata are whatever
    the user has open — a web page title becomes a Firefox window title. The UI
    escapes every field it renders and passes data through `data-*` attributes
    rather than inline `onclick` handlers, because an inline handler puts the
    value through two parsers (HTML entities, then JS) and no single escape is
    correct for both. The token-capture page reads `?t=` from `location.search`
    in the browser instead of reflecting it into the response.
+7. **Security headers.** CSP (nonce-based), HSTS, X-Frame-Options DENY,
+   nosniff, no-referrer, COOP on every response.
 
-The remaining exposure is the network itself: plain HTTP, so anyone who can
-sniff the LAN can read the token. That is the documented trade-off — run it on a
-network you trust, or put it behind a reverse proxy with TLS.
+The Cloudflare tunnel provides HTTPS end-to-end. On the LAN, plain HTTP is the
+documented trade-off — run it on a network you trust.
 
 ## Configuration
 

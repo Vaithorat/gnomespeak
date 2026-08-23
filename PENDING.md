@@ -7,6 +7,11 @@
 - ✅ **YouTube search** — Find and play YouTube videos via `yt-dlp`
 - ✅ **D-Bus/snap confinement handling** — Diagnosed and reported clearly
 - ✅ **Error reporting** — Real reasons shown instead of silent failures
+- ✅ **Cloudflare Tunnel** — `make dev` starts a quick tunnel by default
+- ✅ **Device pairing** — off-network callers must pair a device
+- ✅ **Security headers** — CSP, HSTS, X-Frame-Options, nosniff
+- ✅ **Rate limiting** — auth and pairing attempts rate-limited
+- ✅ **Audit log** — every action and rejection recorded
 - ✅ **Full test coverage** — 97 tests, all passing
 
 ## Known Limitations (By Design)
@@ -103,13 +108,17 @@ sudo apt install xdotool wmctrl
 
 # For QR code in server output
 pip install qrcode[pil]
+
+# For Cloudflare Tunnel (global access)
+# Download from: https://github.com/cloudflare/cloudflared/releases
+# Or: sudo apt install cloudflared
 ```
 
 ### Environment Requirements
 - **Linux** — GNOME Shell 45+, systemd, PipeWire/ALSA
 - **Python** — 3.11+
 - **Session** — Wayland or X11 (both supported; feature set varies)
-- **Network** — LAN access from phone to PC (no internet required)
+- **Network** — LAN access from phone to PC; Cloudflare tunnel for global access
 
 ## Future Directions (Out of Scope for v3)
 

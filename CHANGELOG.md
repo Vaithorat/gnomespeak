@@ -1,5 +1,36 @@
 # Changelog
 
+## [3.1.0] — 2026-08-23
+
+### Added
+- **Cloudflare Tunnel** — `make dev` starts a quick tunnel by default, giving
+  a `*.trycloudflare.com` URL accessible from anywhere. No port forwarding,
+  no router config, no Cloudflare account needed. `--tunnel` flag on
+  `vt serve`; `TUNNEL=0` disables it.
+- **Device pairing** — off-network callers must present a paired-device
+  credential; the startup token is only accepted on the LAN. Pair a phone
+  with `vt pair` or the QR code printed at startup. Max 32 devices.
+- **`vt pair`** — issue a one-time pairing code with link and QR. Supports
+  `--url`, `--port`, `--minutes`, `--label`.
+- **`vt devices`** — list paired devices or revoke access (`--revoke ID`,
+  `--revoke-all`).
+- **`vt audit`** — show the recent security log (`-n N`, `--rejects`).
+- **Security headers** — CSP (nonce-based), HSTS, X-Frame-Options DENY,
+  nosniff, no-referrer, COOP on every response.
+- **Rate limiting** — 5 failed auth attempts per IP triggers a 15-minute
+  lockout. Pairing attempts rate-limited globally (30/hour).
+- **Audit log** — every authenticated action and rejected attempt recorded
+  in `~/.local/state/voicetalk/audit.log` as JSONL.
+- **New API endpoints** — `/api/session`, `/api/pair`, `/api/pair/self`,
+  `/api/devices`, `/api/devices/revoke`.
+
+### Changed
+- **`make dev`** — now starts a Cloudflare tunnel by default.
+- **Server banner** — shows tunnel URL, pairing code, and device count.
+- **Token auth** — LAN callers use token; remote callers must pair a device.
+- **`--no-token`** — disables token for LAN callers only; remote callers
+  still need a paired device.
+
 ## [3.0.0] — 2026-08-23
 
 Complete rewrite. VoiceTalk was a Windows-only Python server with a

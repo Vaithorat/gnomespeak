@@ -370,6 +370,97 @@
         .confirm-overlay.hidden {
             display: none;
         }
+
+        /* Utility classes rather than style="" attributes: the page ships a
+           nonce-only style-src, which blocks inline style attributes too. */
+        .push-right { margin-left: auto; }
+        .strong { font-weight: bold; }
+        .accent { color: var(--accent); }
+        .wrap { white-space: normal; line-height: 1.4; }
+        .pad { padding: 16px; }
+
+        .pair {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            padding: 20px 4px;
+        }
+
+        .pair-title {
+            font-size: 15px;
+            font-weight: bold;
+        }
+
+        .pair-help {
+            color: var(--fg);
+            opacity: 0.75;
+            line-height: 1.5;
+        }
+
+        .pair-help code {
+            background-color: var(--item-bg);
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            padding: 1px 5px;
+        }
+
+        .pair-error {
+            background-color: var(--danger);
+            color: white;
+            border-radius: 4px;
+            padding: 10px 12px;
+            line-height: 1.4;
+        }
+
+        .pair input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background-color: var(--item-bg);
+            color: var(--fg);
+            font-family: monospace;
+            font-size: 14px;
+            min-height: 44px;
+        }
+
+        .pair #pairCode {
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+
+        .pair-submit {
+            padding: 12px;
+            border: 1px solid var(--accent);
+            border-radius: 4px;
+            background-color: var(--accent);
+            color: white;
+            font-family: monospace;
+            font-size: 13px;
+            cursor: pointer;
+            min-height: 44px;
+        }
+
+        .pair-submit[disabled] {
+            opacity: 0.6;
+            cursor: default;
+        }
+
+        .device-current {
+            color: var(--accent);
+        }
+
+        .revoke {
+            padding: 6px 12px;
+            border: 1px solid var(--danger);
+            border-radius: 4px;
+            background-color: transparent;
+            color: var(--danger);
+            font-family: monospace;
+            font-size: 11px;
+            cursor: pointer;
+            min-height: 32px;
+        }
     </style>
 </head>
 <body>
@@ -391,8 +482,8 @@
         <div class="confirm-dialog">
             <div class="confirm-text" id="confirmText"></div>
             <div class="confirm-buttons">
-                <button class="cancel" onclick="cancelConfirm()">Cancel</button>
-                <button class="confirm" onclick="doConfirm()">Confirm</button>
+                <button class="cancel" id="confirmCancel">Cancel</button>
+                <button class="confirm" id="confirmOk">Confirm</button>
             </div>
         </div>
     </div>
@@ -401,7 +492,6 @@
         const API_BASE = "/api";
         const POLL_INTERVAL = 1000;
 
-        let token = null;
         let state = null;
         let navStack = [];
         let currentConfirm = null;
@@ -414,6 +504,16 @@
         let installedQuery = "";
         let installedError = "";
         let appsFetching = false;
+
+        // Device pairing state
+        let pairError = "";
+        let pairBusy = false;
+        let pairCodeDraft = "";
+        let pairNameDraft = "";
+        let pendingCode = "";
+        let devicesList = null;
+        let devicesError = "";
+        let currentDeviceId = "";
 
         // YouTube search state
         let youtubeResults = null;
@@ -448,32 +548,221 @@
             render();
         }
 
-        // === API ===
-        function initToken() {
-            token = localStorage.getItem("vt_token");
+        // === Auth ===
+        // Two credentials, deliberately unequal. The ?t= startup token is a LAN
+        // convenience and the server refuses it outright from off-network. A
+        // device credential is the one that works from anywhere -- and because
+        // localStorage is per-origin, a phone paired against the LAN address
+        // still pairs once more against the public URL. Same phone, different
+        // origin, different box of secrets.
+        let token = null;
+        let device = null;
+        let authState = "unknown";   // unknown | ok | pairing | denied
+        let pollTimer = null;
+
+        function initAuth() {
+            try { token = localStorage.getItem("vt_token"); } catch (e) { token = null; }
+            try { device = JSON.parse(localStorage.getItem("vt_device") || "null"); } catch (e) { device = null; }
+            if (device && !(device.id && device.secret)) device = null;
+
+            const url = new URL(window.location);
+            let dirty = false;
+            const code = url.searchParams.get("p");
+            if (code) {
+                pendingCode = code;
+                // Out of the address bar before anything can bookmark, screenshot,
+                // or share a URL that still carries a live pairing code.
+                url.searchParams.delete("p");
+                dirty = true;
+            }
             if (!token) {
-                const url = new URL(window.location);
-                token = url.searchParams.get("t");
-                if (token) {
-                    localStorage.setItem("vt_token", token);
-                    window.location.replace(window.location.pathname);
+                const t = url.searchParams.get("t");
+                if (t) {
+                    token = t;
+                    try { localStorage.setItem("vt_token", t); } catch (e) {}
                 }
             }
+            if (url.searchParams.get("t")) { url.searchParams.delete("t"); dirty = true; }
+            if (dirty) {
+                const q = url.searchParams.toString();
+                history.replaceState({}, "", url.pathname + (q ? "?" + q : "") + url.hash);
+            }
+        }
+
+        function saveDevice(data) {
+            device = {id: data.device_id, secret: data.secret, name: data.name};
+            currentDeviceId = data.device_id;
+            try { localStorage.setItem("vt_device", JSON.stringify(device)); } catch (e) {}
+        }
+
+        function forgetDevice() {
+            device = null;
+            currentDeviceId = "";
+            try { localStorage.removeItem("vt_device"); } catch (e) {}
+        }
+
+        function defaultDeviceName() {
+            const ua = navigator.userAgent || "";
+            const os = /Android/i.test(ua) ? "Android"
+                : /iPhone|iPad|iPod/i.test(ua) ? "iOS"
+                : /Windows/i.test(ua) ? "Windows"
+                : /Mac OS X/i.test(ua) ? "Mac"
+                : /Linux/i.test(ua) ? "Linux" : "Browser";
+            const browser = /Firefox\//.test(ua) ? "Firefox"
+                : /Edg\//.test(ua) ? "Edge"
+                : /Chrome\//.test(ua) ? "Chrome"
+                : /Safari\//.test(ua) ? "Safari" : "browser";
+            return os + " " + browser;
         }
 
         function getHeaders() {
             const h = {"Content-Type": "application/json"};
-            if (token) h["X-VT-Token"] = token;
+            if (device) {
+                h["X-VT-Device"] = device.id;
+                h["X-VT-Secret"] = device.secret;
+            } else if (token) {
+                h["X-VT-Token"] = token;
+            }
             return h;
         }
+
+        async function checkSession() {
+            try {
+                const resp = await fetch(`${API_BASE}/session`, {headers: getHeaders()});
+                if (!resp.ok) return null;
+                return await resp.json();
+            } catch (e) {
+                return null;
+            }
+        }
+
+        async function pairSelf() {
+            // A session holding only the startup token trades up to a real
+            // device credential. That keeps this browser working if the token
+            // is ever rotated, and puts it in `vt devices` alongside everything
+            // else that can drive this PC.
+            try {
+                const resp = await fetch(`${API_BASE}/pair/self`, {
+                    method: "POST",
+                    headers: getHeaders(),
+                    body: JSON.stringify({name: defaultDeviceName()}),
+                });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (data.ok) saveDevice(data);
+            } catch (e) {}
+        }
+
+        async function submitPairing(code, name) {
+            if (pairBusy) return false;
+            pairBusy = true;
+            pairError = "";
+            if (authState === "pairing") renderPairing();
+            try {
+                const resp = await fetch(`${API_BASE}/pair`, {
+                    method: "POST",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({code: code, name: name}),
+                });
+                let data = {};
+                try { data = await resp.json(); } catch (e) {}
+                if (resp.ok && data.ok) {
+                    saveDevice(data);
+                    authState = "ok";
+                    pairError = "";
+                    pairCodeDraft = "";
+                    clearError();
+                    return true;
+                }
+                pairError = data.message || `Pairing failed (${resp.status})`;
+            } catch (e) {
+                pairError = "Connection error";
+            } finally {
+                pairBusy = false;
+            }
+            return false;
+        }
+
+        function startPolling() {
+            if (pollTimer) return;
+            updateUI();
+            pollTimer = setInterval(updateUI, POLL_INTERVAL);
+        }
+
+        function stopPolling() {
+            if (pollTimer) clearInterval(pollTimer);
+            pollTimer = null;
+        }
+
+        function enterPairing() {
+            authState = "pairing";
+            stopPolling();
+            if (!pairNameDraft) pairNameDraft = defaultDeviceName();
+            clearError();
+            renderPairing();
+        }
+
+        async function bootstrap() {
+            if (pendingCode) {
+                // Arrived from a pairing link, so there is nothing to type.
+                await submitPairing(pendingCode, defaultDeviceName());
+                pendingCode = "";
+            }
+
+            let info = await checkSession();
+            if (info && !info.authenticated && device) {
+                // The stored credential was revoked elsewhere, or devices.json
+                // was reset. Drop it and see whether the LAN token still gets
+                // us in, rather than looping forever on a dead secret.
+                forgetDevice();
+                info = await checkSession();
+            }
+
+            if (!info) {
+                authState = "denied";
+                showError("Cannot reach the server");
+                startPolling();
+                return;
+            }
+
+            if (!info.authenticated) {
+                if (info.needs_pairing) {
+                    enterPairing();
+                } else {
+                    authState = "denied";
+                    showError(info.rate_limited
+                        ? "Too many failed attempts — wait, then reload"
+                        : "Authentication required");
+                    render();
+                }
+                return;
+            }
+
+            authState = "ok";
+            currentDeviceId = info.device_id || "";
+            if (info.kind !== "device") await pairSelf();
+            startPolling();
+        }
+
+        // === API ===
 
         async function fetchState() {
             try {
                 const resp = await fetch(`${API_BASE}/state`, {headers: getHeaders()});
                 if (!resp.ok) {
                     updateStatus(false);
-                    if (resp.status === 401) {
-                        showError("Authentication required");
+                    if (resp.status === 401 || resp.status === 429) {
+                        let info = {};
+                        try { info = await resp.json(); } catch (e) {}
+                        if (resp.status === 401 && info.needs_pairing) {
+                            // Revoked mid-session, or this origin was never
+                            // paired. Either way the fix is the pairing screen,
+                            // not an error banner the user cannot act on.
+                            if (device) forgetDevice();
+                            enterPairing();
+                            return null;
+                        }
+                        showError(info.message || "Authentication required");
                     } else {
                         showError(`Error ${resp.status}`);
                     }
@@ -609,6 +898,7 @@
         }
 
         async function updateUI() {
+            if (authState === "pairing") return;
             const data = await fetchState();
             if (!data) return;
             state = data;
@@ -630,12 +920,17 @@
             return navStack.length > 0 && navStack[navStack.length - 1].startsWith("youtube:");
         }
 
+        function isDevicesView() {
+            return navStack.length > 0 && navStack[navStack.length - 1].startsWith("devices:");
+        }
+
         function viewSignature() {
             const nav = navStack.join(">");
             // The installed list and YouTube search come from separate endpoints,
             // not the snapshot, so a state poll must not re-render them --
             // rebuilding would wipe the search box or lose focus.
             if (isInstalledView()) return "installed|" + nav;
+            if (isDevicesView()) return "devices|" + nav;
             // The YouTube view is otherwise pinned against state polls, but the
             // autoplay banner has to clear itself once the fix lands, so let
             // that one field through.
@@ -644,20 +939,21 @@
         }
 
         function render() {
+            if (authState === "pairing") { renderPairing(); return; }
             lastSignature = state ? viewSignature() : null;
             const content = document.getElementById("content");
             const breadcrumb = document.getElementById("breadcrumb");
 
             // Update breadcrumb
             if (navStack.length > 0) {
-                let html = '<button onclick="navTop()">≡ home</button>';
+                let html = '<button data-nav-top="1">≡ home</button>';
                 for (let i = 0; i < navStack.length; i++) {
                     const parts = navStack[i].split(":", 1);
                     const label = navStack[i].substring(parts[0].length + 1) || navStack[i];
                     html += ' / <span>' + escapeHtml(label) + '</span>';
                 }
                 if (navStack.length > 0) {
-                    html += ' <button style="margin-left:auto" onclick="navPop()">&lt; back</button>';
+                    html += ' <button class="push-right" data-nav-pop="1">&lt; back</button>';
                 }
                 breadcrumb.innerHTML = html;
                 breadcrumb.classList.remove("hidden");
@@ -688,6 +984,8 @@
                     renderInstalled(content);
                 } else if (type === "youtube") {
                     renderYoutube(content);
+                } else if (type === "devices") {
+                    renderDevices(content);
                 }
             }
         }
@@ -723,6 +1021,11 @@
             html += `<div class="list-item" data-nav="youtube:search">`;
             html += `<span class="list-item-label">▶️ YouTube Search</span>`;
             html += `<span class="list-item-value">search</span>`;
+            html += `</div>`;
+
+            html += `<div class="list-item" data-nav="devices:list">`;
+            html += `<span class="list-item-label">🔑 Paired devices</span>`;
+            html += `<span class="list-item-value">${devicesList ? devicesList.length : "manage"}</span>`;
             html += `</div>`;
 
             el.innerHTML = html;
@@ -814,20 +1117,20 @@
             }
 
             let html = "";
-            html += `<div class="list-item"><span class="list-item-label" style="font-weight:bold">${escapeHtml(target.title)}</span></div>`;
+            html += `<div class="list-item"><span class="list-item-label strong">${escapeHtml(target.title)}</span></div>`;
 
             if (target.subtitle) {
                 html += `<div class="list-item"><span class="list-item-value">${escapeHtml(target.subtitle)}</span></div>`;
             }
 
             if (target.status) {
-                html += `<div class="list-item"><span class="list-item-label">Status: <span style="color:var(--accent)">${escapeHtml(target.status)}</span></span></div>`;
+                html += `<div class="list-item"><span class="list-item-label">Status: <span class="accent">${escapeHtml(target.status)}</span></span></div>`;
             }
 
             // Why a control the player claims to support is not offered. Without
             // this the absence just looks like a missing feature in vt.
             if (target.note) {
-                html += `<div class="list-item"><span class="list-item-value" style="white-space:normal;line-height:1.4">${escapeHtml(target.note)}</span></div>`;
+                html += `<div class="list-item"><span class="list-item-value wrap">${escapeHtml(target.note)}</span></div>`;
             }
 
             if (target.position !== null && target.length !== null && target.length > 0) {
@@ -864,7 +1167,7 @@
             });
 
             if (!target.actions || target.actions.length === 0) {
-                html += `<div class="empty" style="padding:16px">No actions</div>`;
+                html += `<div class="empty pad">No actions</div>`;
             }
 
             el.innerHTML = html;
@@ -954,7 +1257,20 @@
         function bindDelegatedHandlers() {
             const content = document.getElementById("content");
 
+            document.getElementById("confirmCancel").addEventListener("click", cancelConfirm);
+            document.getElementById("confirmOk").addEventListener("click", doConfirm);
+
+            document.getElementById("breadcrumb").addEventListener("click", (ev) => {
+                if (ev.target.closest("[data-nav-top]")) { navTop(); return; }
+                if (ev.target.closest("[data-nav-pop]")) { navPop(); }
+            });
+
             content.addEventListener("click", (ev) => {
+                if (ev.target.closest("#pairSubmit")) { doPairSubmit(); return; }
+
+                const revoke = ev.target.closest("[data-revoke]");
+                if (revoke) { revokeDevice(revoke.dataset.revoke); return; }
+
                 const category = ev.target.closest("[data-category]");
                 if (category) { navCategory(category.dataset.category); return; }
 
@@ -971,7 +1287,16 @@
                 }
             });
 
+            content.addEventListener("keydown", (ev) => {
+                if (ev.key === "Enter" && (ev.target.id === "pairCode" || ev.target.id === "pairName")) {
+                    ev.preventDefault();
+                    doPairSubmit();
+                }
+            });
+
             content.addEventListener("input", (ev) => {
+                if (ev.target.id === "pairCode") { pairCodeDraft = ev.target.value; return; }
+                if (ev.target.id === "pairName") { pairNameDraft = ev.target.value; return; }
                 if (ev.target.id === "appSearch") {
                     installedQuery = ev.target.value;
                     renderAppList();
@@ -1070,15 +1395,144 @@
             list.innerHTML = html;
         }
 
+        // === Pairing ===
+        function renderPairing() {
+            const el = document.getElementById("content");
+            const breadcrumb = document.getElementById("breadcrumb");
+            breadcrumb.classList.add("hidden");
+            updateStatus(false);
+
+            let html = '<div class="pair">';
+            html += '<div class="pair-title">Pair this device</div>';
+            html += '<div class="pair-help">This browser is not paired with your PC yet. ' +
+                    'Run <code>vt pair</code> on the PC and enter the code it prints — ' +
+                    'or just scan the QR code it shows.</div>';
+            if (pairError) {
+                html += `<div class="pair-error">${escapeHtml(pairError)}</div>`;
+            }
+            html += `<input id="pairCode" type="text" inputmode="text" maxlength="13"
+                autocomplete="off" autocapitalize="characters" spellcheck="false"
+                placeholder="XXXXX-XXXXX" value="${escapeAttr(pairCodeDraft)}">`;
+            html += `<input id="pairName" type="text" maxlength="48"
+                autocomplete="off" spellcheck="false"
+                placeholder="Device name" value="${escapeAttr(pairNameDraft)}">`;
+            html += `<button class="pair-submit" id="pairSubmit"${pairBusy ? " disabled" : ""}>` +
+                    (pairBusy ? "Pairing…" : "Pair this device") + '</button>';
+            html += '</div>';
+            el.innerHTML = html;
+        }
+
+        async function doPairSubmit() {
+            const code = pairCodeDraft.trim();
+            if (!code) { pairError = "Enter the code shown on the PC."; renderPairing(); return; }
+            const ok = await submitPairing(code, pairNameDraft.trim() || defaultDeviceName());
+            if (ok) {
+                devicesList = null;
+                navTop();
+                startPolling();
+            } else {
+                renderPairing();
+            }
+        }
+
+        // === Devices ===
+        function renderDevices(el) {
+            let html = '';
+            if (devicesList === null) {
+                html = devicesError
+                    ? `<div class="empty">${escapeHtml(devicesError)}</div>`
+                    : '<div class="empty">Loading...</div>';
+                el.innerHTML = html;
+                if (!devicesError) fetchDevices();
+                return;
+            }
+            if (!devicesList.length) {
+                el.innerHTML = '<div class="empty">No paired devices.</div>';
+                return;
+            }
+            devicesList.forEach(d => {
+                const isCurrent = d.id === currentDeviceId;
+                const seen = d.last_seen ? relativeTime(d.last_seen) : "never";
+                const where = d.last_ip ? ` · ${escapeHtml(d.last_ip)}` : "";
+                html += '<div class="list-item">';
+                html += `<span class="list-item-label${isCurrent ? " device-current" : ""}">` +
+                        `${escapeHtml(d.name)}${isCurrent ? " (this device)" : ""}` +
+                        `<br><span class="list-item-value wrap">last seen ${escapeHtml(seen)}${where}</span></span>`;
+                html += `<button class="revoke" data-revoke="${escapeAttr(d.id)}">Revoke</button>`;
+                html += '</div>';
+            });
+            el.innerHTML = html;
+        }
+
+        async function fetchDevices() {
+            try {
+                const resp = await fetch(`${API_BASE}/devices`, {headers: getHeaders()});
+                if (!resp.ok) {
+                    devicesError = `Error ${resp.status}`;
+                } else {
+                    const data = await resp.json();
+                    devicesList = data.devices || [];
+                    currentDeviceId = data.current || currentDeviceId;
+                    devicesError = "";
+                }
+            } catch (e) {
+                devicesError = "Connection error";
+            }
+            if (isDevicesView()) renderDevices(document.getElementById("content"));
+        }
+
+        async function revokeDevice(id) {
+            // Revoking the device you are holding is a logout, and the phone
+            // has to be told that before its next poll 401s at it.
+            const self = id === currentDeviceId;
+            try {
+                const resp = await fetch(`${API_BASE}/devices/revoke`, {
+                    method: "POST",
+                    headers: getHeaders(),
+                    body: JSON.stringify({id: id}),
+                });
+                const data = await resp.json().catch(() => ({}));
+                if (!resp.ok || !data.ok) {
+                    showError(data.message || `Revoke failed (${resp.status})`);
+                    return;
+                }
+            } catch (e) {
+                showError("Connection error");
+                return;
+            }
+            if (self) {
+                forgetDevice();
+                devicesList = null;
+                navTop();
+                enterPairing();
+                return;
+            }
+            showNotice("Device revoked");
+            devicesList = null;
+            fetchDevices();
+        }
+
+        function relativeTime(epochSeconds) {
+            const delta = Date.now() / 1000 - epochSeconds;
+            if (!epochSeconds || delta < 0) return "never";
+            if (delta < 60) return "just now";
+            if (delta < 3600) return `${Math.floor(delta / 60)} min ago`;
+            if (delta < 86400) return `${Math.floor(delta / 3600)} h ago`;
+            return `${Math.floor(delta / 86400)} d ago`;
+        }
+
         function capitalize(s) {
             return s.charAt(0).toUpperCase() + s.slice(1);
         }
 
         // === Startup ===
-        initToken();
+        // bootstrap() decides whether this browser polls or pairs, so the poll
+        // interval is started there rather than unconditionally here: an
+        // unpaired phone hammering /api/state at 1 Hz just feeds the rate
+        // limiter its own lockout.
+        initAuth();
         bindDelegatedHandlers();
-        updateUI();
-        setInterval(updateUI, POLL_INTERVAL);
+        bootstrap();
     </script>
 </body>
 </html>

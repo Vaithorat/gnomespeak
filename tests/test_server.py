@@ -9,19 +9,26 @@ from vt.actions import execute_app_action, match_window, shell_error
 from vt.server import VoiceTalkServer
 
 
-def _make_app(server: VoiceTalkServer) -> web.Application:
-    app = web.Application()
-    app.router.add_get("/", server.handle_root)
-    app.router.add_get("/api/state", server.handle_api_state)
-    app.router.add_get("/api/apps", server.handle_api_apps)
-    app.router.add_post("/api/do", server.handle_api_do)
-    return app
+def make_server(tmp_path, **kwargs) -> VoiceTalkServer:
+    """A server whose credential files live under tmp_path.
+
+    Without this every test would read -- and pairing tests would write -- the
+    developer's real ~/.config/voicetalk/devices.json.
+    """
+    kwargs.setdefault("token", "test-token")
+    return VoiceTalkServer(
+        "127.0.0.1", 0,
+        devices_path=tmp_path / "devices.json",
+        audit_path=tmp_path / "audit.log",
+        codes_path=tmp_path / "pairing.json",
+        **kwargs,
+    )
 
 
 @pytest.fixture
-async def client():
-    server = VoiceTalkServer("127.0.0.1", 0, token="test-token")
-    async with TestClient(TestServer(_make_app(server))) as c:
+async def client(tmp_path):
+    server = make_server(tmp_path)
+    async with TestClient(TestServer(server.make_app())) as c:
         c.vt = server
         yield c
 
@@ -49,10 +56,10 @@ async def test_do_requires_token(client):
     assert resp.status == 401
 
 
-async def test_no_token_mode_allows_everything():
-    server = VoiceTalkServer("127.0.0.1", 0, token="")
+async def test_no_token_mode_allows_everything(tmp_path):
+    server = make_server(tmp_path, token="")
     assert server.token == ""
-    async with TestClient(TestServer(_make_app(server))) as c:
+    async with TestClient(TestServer(server.make_app())) as c:
         assert (await c.get("/api/state")).status == 200
 
 

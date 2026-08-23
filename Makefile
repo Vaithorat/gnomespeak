@@ -31,7 +31,7 @@ MAKEFLAGS += --no-print-directory
 .DEFAULT_GOAL := help
 
 # Optional overrides: make dev PORT=9000 HOST=0.0.0.0 OPEN=1
-SERVE_FLAGS :=
+SERVE_FLAGS := --tunnel
 ifdef HOST
 SERVE_FLAGS += --host $(HOST)
 endif

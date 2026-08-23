@@ -10,6 +10,8 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 - **YouTube playback control** — When a YouTube video plays in your browser, control it from the phone: play/pause, seek, volume, fullscreen, close (requires `xdotool` and `wmctrl`).
 - **Capability-aware controls** — The phone shows only the actions each player/window/app actually supports (play/pause, next/prev, seek, focus, close, mute, volume).
 - **Pre-configured commands** — Define shell commands in TOML once, invoke them from the phone by name. No arbitrary text input.
+- **Cloudflare Tunnel** — `make dev` starts a quick tunnel by default, giving you a `*.trycloudflare.com` URL accessible from anywhere. No port forwarding, no router config, no Cloudflare account needed.
+- **Device pairing** — off-network callers must present a paired-device credential; the startup token is only accepted on the LAN. Pair a phone with `vt pair` or the QR code printed at startup.
 - **Web UI, no app install** — Open `http://<pc-ip>:8765` in any phone browser. No APK, no build step, bookmarkable.
 - **Token auth** — Printed on startup, hidden from history. Works on trusted LANs.
 - **Linux-native** — MPRIS over D-Bus, PipeWire volume, psutil app detection, systemd services. Built for GNOME/Wayland.
@@ -92,18 +94,26 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
    `make dev` is the only start command you need. It sets the environment up if
    it isn't already, then runs the server through `venv/bin/vt` by absolute
    path — so it behaves identically from a VS Code terminal, a plain shell, or
-   any other directory. Override with `make dev PORT=9000 HOST=0.0.0.0`.
+   any other directory. A Cloudflare tunnel is started by default.
 
    Output:
    ```
    VoiceTalk → http://192.168.1.5:8765/?t=Xq3v...
    Token: Xq3v...
 
-   Press Ctrl+C to stop.
+   ⏳ Starting Cloudflare Tunnel...
+
+   ── Cloudflare Tunnel is up ────────────────────
+   Public URL: https://some-words.trycloudflare.com
+
+   ── Pair a device ──────────────────────────────
+   Code:  RRMFH-2QK9X   (valid 10 min, one device)
+   Link:  https://some-words.trycloudflare.com/?p=RRMFH2QK9X
    ```
 
-2. **Open the URL on your phone** (or scan the QR code if printed)
-   - The token is stored in the browser's `localStorage`, so the bookmark works for future sessions.
+2. **Open the URL on your phone** (or scan the QR code)
+   - From the LAN: the token is stored in `localStorage`, bookmark works.
+   - From anywhere: enter the pairing code shown at startup.
 
 3. **Control your PC**
    - Select a target (media player, window, app, command)
@@ -114,7 +124,10 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 
 | Command | Purpose |
 |---------|---------|
-| `vt serve [--host IP] [--port 8765] [--no-token] [--open]` | Start the HTTP server on a given host/port. Default host is your detected LAN IP. Without `--no-token`, a random token is generated and required for all API calls. `--open` attempts to open the page in your default browser. |
+| `vt serve [--host IP] [--port 8765] [--no-token] [--open] [--tunnel]` | Start the HTTP server. Default: LAN IP with Cloudflare tunnel. `--tunnel` enables a quick tunnel for global access. `--no-token` disables token auth. `--open` opens in browser. |
+| `vt pair [--url URL] [--port PORT] [--minutes N]` | Issue a one-time pairing code for a new device. Prints a link and QR code. |
+| `vt devices [--revoke ID] [--revoke-all]` | List paired devices or revoke access. |
+| `vt audit [-n N] [--rejects]` | Show recent security log entries. |
 | `vt status` | Print the current state as a terminal table (no web server). |
 | `vt do <target-id> <action-id> [value]` | Invoke an action from the CLI. For testing. |
 | `vt commands` | List configured commands. |
@@ -126,14 +139,35 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 
 ## HTTP API
 
-The web UI speaks three endpoints (token required via `X-VT-Token` header):
+The web UI speaks several endpoints. Token auth via `X-VT-Token` header for
+LAN; device auth via `X-VT-Device` + `X-VT-Secret` headers for remote access.
 
 ```
+GET /api/session
+  → {authenticated, kind, device_id, remote, needs_pairing}
+
+POST /api/pair
+  ← {code, name}
+  → {ok, device_id, secret, name}
+
+POST /api/pair/self
+  ← {name}
+  → {ok, device_id, secret, name}
+
+GET /api/devices
+  → {devices: [...], current: device_id}
+
+POST /api/devices/revoke
+  ← {id}
+
 GET /api/state
   → {"targets": [...], "ts": unix_timestamp}
 
 GET /api/apps[?q=search+terms]
   → {"apps": [{"id": "launcher:firefox", "title": "Firefox", ...}]}
+
+GET /api/youtube[?q=search+terms]
+  → {"results": [...], "error": ""}
 
 POST /api/do
   ← {"target": "kind:id", "action": "action-id", "value": float?}
@@ -189,7 +223,7 @@ confirm = true              # Require double-tap
 - **MPRIS only** — Only players that register on D-Bus appear (Firefox, Chrome, VLC, mpv, Spotify). HTML5 `<video>` without a media session will not.
 - **Window extension** — Requires GNOME Shell 45+, needs a logout/login to activate, and may need a `metadata.json` update for GNOME 51+. On X11 or KDE, the feature doesn't work.
 - **Autoplay is a browser setting** — vt can read and set it for Firefox (`vt allow-autoplay`), but it only takes effect on the next Firefox start, and for Chromium-family browsers there is no equivalent switch from outside the process.
-- **Plain HTTP** — The token stops casual access on a trusted network; it is not TLS. Do not expose to the internet.
+- **Plain HTTP** — The token stops casual access on a trusted network; it is not TLS. The Cloudflare tunnel provides HTTPS end-to-end.
 
 ## Troubleshooting
 
@@ -242,10 +276,28 @@ confirm = true              # Require double-tap
 
 ## Security
 
-- **Token auth** — A 22-character URL-safe random token, required for every API call. Regenerated each startup (or persisted with `--save-token` when that flag is added).
-- **Command validation** — Commands are defined in a TOML file on the PC; the phone can only name one, not supply arguments.
-- **Trusted LAN** — Assumes the network is trusted. Do not bind to `0.0.0.0` and expose to the internet.
-- **No secrets stored** — V3 has no API keys, no SMTP credentials, no encryption at rest. Config is plain TOML.
+Two tiers of access, deliberately unequal:
+
+- **LAN** — the startup token in the URL is enough. It travels in a bookmark
+  and a QR code, which is fine for a network you already control.
+- **Remote** — the token is not accepted at all. The caller must present a
+  paired-device credential, and a device is paired once, from a code that only
+  ever appears on this PC's own terminal.
+
+That split is the whole security model: exposing the public URL leaks nothing,
+because the URL is not a credential off-network.
+
+- **Device pairing** — 31^10 entropy codes, 10-minute TTL, single-use. Pair a
+  device with `vt pair` or the QR printed at startup. Max 32 devices.
+- **Rate limiting** — 5 failed auth attempts per IP triggers a 15-minute
+  lockout. Pairing attempts are rate-limited globally (30/hour).
+- **Audit log** — every authenticated action and rejected attempt is recorded
+  in `~/.local/state/voicetalk/audit.log`. View with `vt audit`.
+- **Security headers** — CSP, HSTS, X-Frame-Options, nosniff on every response.
+- **Command validation** — Commands are defined in a TOML file on the PC; the
+  phone can only name one, not supply arguments.
+- **No secrets stored** — V3 has no API keys, no SMTP credentials, no
+  encryption at rest. Device secrets are SHA-256 hashed.
 
 ## Project Structure
 
@@ -257,6 +309,8 @@ voicetalk/
 │   ├── model.py                # Target/Action dataclasses
 │   ├── state.py                # Snapshot assembly
 │   ├── server.py               # aiohttp HTTP server
+│   ├── auth.py                 # Device pairing, credentials, rate limiting
+│   ├── tunnel.py               # Cloudflare Tunnel integration
 │   ├── commands.py             # TOML commands loader
 │   ├── sources/
 │   │   ├── mpris.py            # MPRIS players

@@ -294,13 +294,146 @@ def cmd_doctor(args):
         print("  All checks passed!")
 
 
+def _print_qr(text: str):
+    """Print a scannable QR for a URL, when the optional dep is present."""
+    try:
+        import qrcode
+    except ImportError:
+        print("  (install qrcode for a scannable code: pip install qrcode)")
+        return
+    try:
+        qr = qrcode.QRCode(version=1, box_size=1, border=1)
+        qr.add_data(text)
+        qr.make(fit=True)
+        print()
+        qr.print_ascii(invert=True)
+    except Exception as e:
+        print(f"  Could not render QR code: {e}")
+
+
+def _lan_url(port: int) -> str:
+    import socket
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        host = sock.getsockname()[0]
+        sock.close()
+    except Exception:
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+def cmd_pair(args):
+    """Issue a one-time pairing code for a new device."""
+    from vt.auth import CODE_TTL, PairingCodes, format_code
+    from vt.tunnel import load_public_url
+
+    codes = PairingCodes(ttl=args.minutes * 60.0 if args.minutes else CODE_TTL)
+    code = codes.issue(args.label or "cli")
+
+    # The pairing link is what makes this one scan instead of ten typed
+    # characters, so it has to point at the origin the phone will actually use:
+    # a device paired against the LAN address has nothing stored for the tunnel
+    # hostname, because localStorage is per-origin.
+    base = (args.url or load_public_url() or _lan_url(args.port)).rstrip("/")
+    link = f"{base}/?p={code}"
+    minutes = int((args.minutes * 60.0 if args.minutes else CODE_TTL) // 60)
+
+    print(f"\n  Pairing code: {format_code(code)}")
+    print(f"  Valid for:    {minutes} min, one device")
+    print(f"  Link:         {link}")
+    if not args.url and not load_public_url():
+        print("\n  Note: no public URL known, so this link is LAN-only.")
+        print("        For remote access run `vt serve --tunnel`, or pass")
+        print("        `vt pair --url https://your-tunnel.example.com`.")
+    print("\n  Open the link on the phone, or enter the code in the")
+    print("  \"Pair this device\" screen the web UI shows.")
+    _print_qr(link)
+    print()
+
+
+def cmd_devices(args):
+    """List or revoke paired devices."""
+    import time
+    from vt.auth import DeviceStore
+
+    store = DeviceStore()
+
+    if args.revoke_all:
+        count = store.revoke_all()
+        print(f"\n  Revoked {count} device(s). Every phone must pair again.\n")
+        return
+
+    if args.revoke:
+        if store.revoke(args.revoke):
+            print(f"\n  Revoked {args.revoke}.\n")
+        else:
+            print(f"\n  No device with id {args.revoke}.\n")
+            sys.exit(1)
+        return
+
+    devices = store.list_devices()
+    if not devices:
+        print("\n  No paired devices.")
+        print("  Pair one with: vt pair\n")
+        return
+
+    print(f"\n  {len(devices)} paired device(s):\n")
+    now = time.time()
+    for device in devices:
+        last = device["last_seen"]
+        if not last:
+            seen = "never"
+        elif now - last < 60:
+            seen = "just now"
+        elif now - last < 3600:
+            seen = f"{int((now - last) // 60)} min ago"
+        elif now - last < 86400:
+            seen = f"{int((now - last) // 3600)} h ago"
+        else:
+            seen = f"{int((now - last) // 86400)} d ago"
+        where = f" from {device['last_ip']}" if device["last_ip"] else ""
+        print(f"  {device['id']}  {device['name'][:24]:<24} last seen {seen}{where}")
+    print("\n  Revoke one with: vt devices --revoke <id>\n")
+
+
+def cmd_audit(args):
+    """Show recent authenticated actions and rejected attempts."""
+    from vt.auth import AuditLog
+
+    log = AuditLog()
+    entries = log.tail(args.count)
+    if not entries:
+        print(f"\n  No audit entries yet ({log.path}).\n")
+        return
+
+    print(f"\n  Last {len(entries)} entries from {log.path}:\n")
+    for entry in entries:
+        event = entry.get("event", "?")
+        if args.rejects and not (event.endswith(".reject") or event.endswith(".throttled")):
+            continue
+        detail = " ".join(
+            f"{k}={v}" for k, v in entry.items() if k not in ("ts", "event")
+        )
+        print(f"  {entry.get('ts', '')}  {event:<16} {detail}")
+    print()
+
+
 def cmd_serve(args):
     """Start the HTTP server."""
     import socket
     from vt.server import run_server
 
+    # --remote binds loopback because cloudflared is the only thing that should
+    # be able to reach the port directly; the tunnel is what carries the rest of
+    # the world in, and it arrives over 127.0.0.1.
+    remote_mode = args.remote or args.tunnel or bool(args.tunnel_name)
+
     # Determine host
     host = args.host
+    if not host and remote_mode:
+        host = "127.0.0.1"
     if not host:
         # Detect LAN IP by connecting to Google's DNS
         try:
@@ -316,7 +449,18 @@ def cmd_serve(args):
     # "" disables auth; None lets the server mint a fresh token.
     token = "" if args.no_token else None
 
-    run_server(host, port, token, open_browser=args.open)
+    run_server(
+        host,
+        port,
+        token,
+        open_browser=args.open,
+        require_pairing=args.require_pairing,
+        trust_proxy=args.trust_proxy or remote_mode,
+        public_url=args.public_url or "",
+        tunnel=args.tunnel or bool(args.tunnel_name),
+        tunnel_name=args.tunnel_name or "",
+        pair_on_start=args.pair,
+    )
 
 
 def cmd_allow_autoplay(args):
@@ -445,6 +589,54 @@ def main():
     serve_parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
     serve_parser.add_argument("--no-token", action="store_true", help="Disable token auth")
     serve_parser.add_argument("--open", action="store_true", help="Open in browser")
+    serve_parser.add_argument(
+        "--tunnel", action="store_true",
+        help="Run a Cloudflare quick tunnel and print a pairing QR for the public URL",
+    )
+    serve_parser.add_argument(
+        "--tunnel-name", metavar="NAME",
+        help="Run a named Cloudflare tunnel instead of a quick one",
+    )
+    serve_parser.add_argument(
+        "--remote", action="store_true",
+        help="Bind loopback and trust proxy headers (use with your own tunnel)",
+    )
+    serve_parser.add_argument(
+        "--public-url", metavar="URL",
+        help="Public https URL this server is reachable at, for pairing links",
+    )
+    serve_parser.add_argument(
+        "--trust-proxy", action="store_true",
+        help="Read CF-Connecting-IP / X-Forwarded-For from a loopback proxy",
+    )
+    serve_parser.add_argument(
+        "--require-pairing", action="store_true",
+        help="Refuse the startup token everywhere; every browser must pair",
+    )
+    serve_parser.add_argument(
+        "--pair", action="store_true", help="Print a pairing code and QR at startup"
+    )
+
+    # pair
+    pair_parser = subparsers.add_parser("pair", help="Issue a one-time device pairing code")
+    pair_parser.add_argument("--url", help="Public base URL the phone will open")
+    pair_parser.add_argument("--port", type=int, default=8765, help="Port for the LAN fallback URL")
+    pair_parser.add_argument("--minutes", type=int, default=10, help="Code lifetime (default: 10)")
+    pair_parser.add_argument("--label", help="Note stored with the code")
+
+    # devices
+    devices_parser = subparsers.add_parser("devices", help="List or revoke paired devices")
+    devices_parser.add_argument("--revoke", metavar="ID", help="Revoke one device by id")
+    devices_parser.add_argument(
+        "--revoke-all", action="store_true", help="Revoke every paired device"
+    )
+
+    # audit
+    audit_parser = subparsers.add_parser("audit", help="Show the recent security log")
+    audit_parser.add_argument("-n", "--count", type=int, default=40, help="Entries to show")
+    audit_parser.add_argument(
+        "--rejects", action="store_true", help="Only rejected or throttled attempts"
+    )
 
     # allow-autoplay
     autoplay_parser = subparsers.add_parser(
@@ -474,6 +666,9 @@ def main():
         "apps": cmd_apps,
         "doctor": cmd_doctor,
         "serve": cmd_serve,
+        "pair": cmd_pair,
+        "devices": cmd_devices,
+        "audit": cmd_audit,
         "allow-autoplay": cmd_allow_autoplay,
         "install-extension": cmd_install_extension,
     }
