@@ -1,0 +1,34 @@
+# VoiceTalk commands.toml — configure pre-set commands for the remote
+
+[[command]]
+id    = "lock"
+label = "Lock Screen"
+icon  = "🔒"
+run   = ["loginctl", "lock-session"]
+
+[[command]]
+id      = "suspend"
+label   = "Suspend"
+icon    = "💤"
+run     = ["systemctl", "suspend"]
+confirm = true
+
+[[command]]
+id    = "youtube"
+label = "Open YouTube"
+icon  = "▶"
+run   = ["xdg-open", "https://youtube.com"]
+
+[[command]]
+id    = "github"
+label = "Open GitHub"
+icon  = "🐙"
+run   = ["xdg-open", "https://github.com"]
+
+# Example: restart a service
+# [[command]]
+# id    = "restart-app"
+# label = "Restart MyApp"
+# icon  = "🔄"
+# run   = ["systemctl", "restart", "myapp"]
+# confirm = true

@@ -1,0 +1,1011 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceTalk</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #ffffff;
+            --fg: #000000;
+            --border: #e0e0e0;
+            --item-bg: #f9f9f9;
+            --item-hover: #f0f0f0;
+            --accent: #2563eb;
+            --accent-hover: #1d4ed8;
+            --danger: #dc2626;
+            --text-muted: #666666;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #1a1a1a;
+                --fg: #e0e0e0;
+                --border: #333333;
+                --item-bg: #252525;
+                --item-hover: #333333;
+                --accent: #3b82f6;
+                --accent-hover: #2563eb;
+                --danger: #ef4444;
+                --text-muted: #999999;
+            }
+        }
+
+        body {
+            background-color: var(--bg);
+            color: var(--fg);
+            font-family: monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            background-color: var(--bg);
+        }
+
+        .header {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            min-height: 44px;
+        }
+
+        .header-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            flex: 1;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #888;
+            margin-left: 8px;
+        }
+
+        .status-dot.connected {
+            background-color: #22c55e;
+        }
+
+        .status-dot.disconnected {
+            background-color: #ef4444;
+        }
+
+        .content {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .breadcrumb {
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            color: var(--accent);
+            min-height: 32px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .breadcrumb button {
+            background: none;
+            border: none;
+            color: var(--accent);
+            cursor: pointer;
+            padding: 4px 8px;
+            font-size: 12px;
+            font-family: monospace;
+            text-decoration: underline;
+        }
+
+        .breadcrumb button:hover {
+            color: var(--accent-hover);
+        }
+
+        .breadcrumb span {
+            color: var(--text-muted);
+        }
+
+        .breadcrumb.hidden {
+            display: none;
+        }
+
+        .list {
+            flex: 1;
+            overflow-y: auto;
+        }
+
+        .list-item {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            user-select: none;
+            transition: background-color 0.1s;
+            min-height: 44px;
+        }
+
+        .list-item:hover {
+            background-color: var(--item-hover);
+        }
+
+        .list-item.action {
+            background-color: var(--item-bg);
+        }
+
+        .list-item.action:active {
+            opacity: 0.7;
+        }
+
+        .list-item.action.danger {
+            background-color: rgba(220, 38, 38, 0.1);
+        }
+
+        .list-item-label {
+            flex: 1;
+            font-size: 13px;
+        }
+
+        .list-item-icon {
+            font-size: 16px;
+            margin-right: 12px;
+            min-width: 20px;
+        }
+
+        .list-item-value {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-left: auto;
+            margin-left: 12px;
+            text-align: right;
+            max-width: 100px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .slider-container {
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .slider-label {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .slider-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        input[type="range"] {
+            flex: 1;
+            height: 4px;
+            border-radius: 2px;
+            background: var(--border);
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+            border: none;
+        }
+
+        .slider-value {
+            font-size: 11px;
+            min-width: 32px;
+            text-align: right;
+            color: var(--text-muted);
+        }
+
+        .search-bar {
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            background-color: var(--bg);
+            z-index: 2;
+        }
+
+        .search-bar input {
+            width: 100%;
+            padding: 10px 12px;
+            font-family: monospace;
+            font-size: 13px;
+            color: var(--fg);
+            background-color: var(--item-bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            min-height: 44px;
+        }
+
+        .search-bar input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .notice {
+            padding: 12px 16px;
+            background-color: rgba(37, 99, 235, 0.12);
+            color: var(--accent);
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+        }
+
+        .notice.hidden {
+            display: none;
+        }
+
+        .empty {
+            padding: 40px 16px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 12px;
+        }
+
+        .error {
+            padding: 12px 16px;
+            background-color: rgba(220, 38, 38, 0.1);
+            color: var(--danger);
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+        }
+
+        .error.hidden {
+            display: none;
+        }
+
+        .confirm-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: flex-end;
+            z-index: 1000;
+        }
+
+        .confirm-dialog {
+            background-color: var(--bg);
+            width: 100%;
+            padding: 20px 16px;
+            border-top: 1px solid var(--border);
+        }
+
+        .confirm-text {
+            margin-bottom: 16px;
+            font-size: 13px;
+        }
+
+        .confirm-buttons {
+            display: flex;
+            gap: 8px;
+        }
+
+        .confirm-buttons button {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            cursor: pointer;
+            min-height: 44px;
+        }
+
+        .confirm-buttons .cancel {
+            background-color: var(--item-bg);
+            color: var(--fg);
+        }
+
+        .confirm-buttons .confirm {
+            background-color: var(--danger);
+            color: white;
+            border-color: var(--danger);
+        }
+
+        .confirm-overlay.hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="header-title">VoiceTalk <span class="status-dot disconnected" id="status"></span></div>
+        </div>
+
+        <div id="error" class="error hidden"></div>
+
+        <div id="notice" class="notice hidden"></div>
+
+        <div class="breadcrumb hidden" id="breadcrumb"></div>
+
+        <div class="list" id="content"></div>
+    </div>
+
+    <div class="confirm-overlay hidden" id="confirmOverlay">
+        <div class="confirm-dialog">
+            <div class="confirm-text" id="confirmText"></div>
+            <div class="confirm-buttons">
+                <button class="cancel" onclick="cancelConfirm()">Cancel</button>
+                <button class="confirm" onclick="doConfirm()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "/api";
+        const POLL_INTERVAL = 1000;
+
+        let token = null;
+        let state = null;
+        let navStack = [];
+        let currentConfirm = null;
+
+        // Installed apps are fetched once from /api/apps rather than riding the
+        // 1 Hz snapshot: hundreds of rows that change about once a week have no
+        // business in a poll loop. Filtering then happens here, so typing is
+        // instant and costs the PC nothing.
+        let installedApps = null;
+        let installedQuery = "";
+        let installedError = "";
+        let appsFetching = false;
+
+        // YouTube search state
+        let youtubeResults = null;
+        let youtubeQuery = "";
+        let youtubeSearching = false;
+        let youtubeError = "";
+
+        // === Navigation ===
+        function nav(path) {
+            navStack = path;
+            render();
+        }
+
+        function navPush(key) {
+            navStack.push(key);
+            renderHoldUntil = 0;
+            render();
+        }
+
+        function navPop() {
+            navStack.pop();
+            render();
+        }
+
+        function navTop() {
+            navStack = [];
+            render();
+        }
+
+        function navCategory(kind) {
+            navStack = [`category:${kind}`];
+            render();
+        }
+
+        // === API ===
+        function initToken() {
+            token = localStorage.getItem("vt_token");
+            if (!token) {
+                const url = new URL(window.location);
+                token = url.searchParams.get("t");
+                if (token) {
+                    localStorage.setItem("vt_token", token);
+                    window.location.replace(window.location.pathname);
+                }
+            }
+        }
+
+        function getHeaders() {
+            const h = {"Content-Type": "application/json"};
+            if (token) h["X-VT-Token"] = token;
+            return h;
+        }
+
+        async function fetchState() {
+            try {
+                const resp = await fetch(`${API_BASE}/state`, {headers: getHeaders()});
+                if (!resp.ok) {
+                    updateStatus(false);
+                    if (resp.status === 401) {
+                        showError("Authentication required");
+                    } else {
+                        showError(`Error ${resp.status}`);
+                    }
+                    return null;
+                }
+                updateStatus(true);
+                clearError();
+                return await resp.json();
+            } catch (e) {
+                updateStatus(false);
+                showError(`Connection error`);
+                return null;
+            }
+        }
+
+        async function fetchYoutubeResults() {
+            if (!youtubeQuery.trim() || youtubeSearching) return;
+            youtubeSearching = true;
+            youtubeError = "";
+            try {
+                const resp = await fetch(`${API_BASE}/youtube?q=${encodeURIComponent(youtubeQuery)}`, {headers: getHeaders()});
+                if (!resp.ok) {
+                    youtubeError = resp.status === 401 ? "Authentication required" : `Error ${resp.status}`;
+                } else {
+                    const data = await resp.json();
+                    youtubeResults = data.results || [];
+                    // The server distinguishes "nothing matched" from "the
+                    // search could not run"; showing both as "no results" is
+                    // what hid a missing yt-dlp behind an imagined network fault.
+                    if (data.error) {
+                        youtubeError = data.error;
+                    } else if (!youtubeResults.length) {
+                        youtubeError = "No results found";
+                    }
+                }
+            } catch (e) {
+                youtubeError = "Connection error";
+            } finally {
+                youtubeSearching = false;
+                renderYoutubeResults();
+            }
+        }
+
+        async function fetchApps() {
+            if (appsFetching) return;
+            appsFetching = true;
+            try {
+                const resp = await fetch(`${API_BASE}/apps`, {headers: getHeaders()});
+                if (!resp.ok) {
+                    installedError = resp.status === 401 ? "Authentication required" : `Error ${resp.status}`;
+                } else {
+                    const data = await resp.json();
+                    installedApps = data.apps || [];
+                    installedError = "";
+                }
+            } catch (e) {
+                installedError = "Connection error";
+            } finally {
+                appsFetching = false;
+                renderAppList();
+            }
+        }
+
+        async function doAction(targetId, actionId, value, opts) {
+            opts = opts || {};
+            clearError();
+            try {
+                const resp = await fetch(`${API_BASE}/do`, {
+                    method: "POST",
+                    headers: getHeaders(),
+                    body: JSON.stringify({target: targetId, action: actionId, value}),
+                });
+
+                const result = await resp.json();
+                if (!result.ok) {
+                    showError(result.message || "Action failed");
+                    return;
+                }
+                if (opts.notice) {
+                    showNotice(result.message || "Done");
+                }
+                if (!opts.silent) {
+                    // Buttons repaint at once so the label flips immediately.
+                    renderHoldUntil = 0;
+                    lastSignature = null;
+                    await updateUI();
+                }
+            } catch (e) {
+                showError(`Error: ${e.message}`);
+            }
+        }
+
+        function updateStatus(connected) {
+            const dot = document.getElementById("status");
+            if (connected) {
+                dot.classList.add("connected");
+                dot.classList.remove("disconnected");
+            } else {
+                dot.classList.remove("connected");
+                dot.classList.add("disconnected");
+            }
+        }
+
+        function showError(msg) {
+            const el = document.getElementById("error");
+            el.textContent = msg;
+            el.classList.remove("hidden");
+        }
+
+        function clearError() {
+            document.getElementById("error").classList.add("hidden");
+        }
+
+        let noticeTimer = null;
+        function showNotice(msg) {
+            const el = document.getElementById("notice");
+            el.textContent = msg;
+            el.classList.remove("hidden");
+            clearTimeout(noticeTimer);
+            noticeTimer = setTimeout(() => el.classList.add("hidden"), 2500);
+        }
+
+        // === UI Rendering ===
+        // Re-rendering wipes and rebuilds the DOM, which resets a slider the
+        // user is mid-drag on and drops the caret/scroll position. Two guards:
+        // a hold window while a control is being touched, and a signature
+        // check so identical polls do no DOM work at all.
+        let renderHoldUntil = 0;
+        let lastSignature = null;
+
+        function holdRender(ms) {
+            renderHoldUntil = Math.max(renderHoldUntil, Date.now() + ms);
+        }
+
+        async function updateUI() {
+            const data = await fetchState();
+            if (!data) return;
+            state = data;
+
+            if (Date.now() < renderHoldUntil) return;
+
+            const signature = viewSignature();
+            if (signature === lastSignature) return;
+            lastSignature = signature;
+
+            render();
+        }
+
+        function isInstalledView() {
+            return navStack.length > 0 && navStack[navStack.length - 1].startsWith("installed:");
+        }
+
+        function isYoutubeView() {
+            return navStack.length > 0 && navStack[navStack.length - 1].startsWith("youtube:");
+        }
+
+        function viewSignature() {
+            const nav = navStack.join(">");
+            // The installed list and YouTube search come from separate endpoints,
+            // not the snapshot, so a state poll must not re-render them --
+            // rebuilding would wipe the search box or lose focus.
+            if (isInstalledView()) return "installed|" + nav;
+            if (isYoutubeView()) return "youtube|" + nav;
+            return (state ? JSON.stringify(state) : "") + "|" + nav;
+        }
+
+        function render() {
+            lastSignature = state ? viewSignature() : null;
+            const content = document.getElementById("content");
+            const breadcrumb = document.getElementById("breadcrumb");
+
+            // Update breadcrumb
+            if (navStack.length > 0) {
+                let html = '<button onclick="navTop()">≡ home</button>';
+                for (let i = 0; i < navStack.length; i++) {
+                    const parts = navStack[i].split(":", 1);
+                    const label = navStack[i].substring(parts[0].length + 1) || navStack[i];
+                    html += ' / <span>' + escapeHtml(label) + '</span>';
+                }
+                if (navStack.length > 0) {
+                    html += ' <button style="margin-left:auto" onclick="navPop()">&lt; back</button>';
+                }
+                breadcrumb.innerHTML = html;
+                breadcrumb.classList.remove("hidden");
+            } else {
+                breadcrumb.classList.add("hidden");
+            }
+
+            // Render current view
+            content.innerHTML = "";
+            if (!state) {
+                content.innerHTML = '<div class="empty">Loading...</div>';
+                return;
+            }
+
+            if (navStack.length === 0) {
+                renderHome(content);
+            } else {
+                const currentItem = navStack[navStack.length - 1];
+                const colonIdx = currentItem.indexOf(":");
+                const type = currentItem.substring(0, colonIdx);
+                const key = currentItem.substring(colonIdx + 1);
+
+                if (type === "category") {
+                    renderCategory(content, key);
+                } else if (type === "target") {
+                    renderTarget(content, key);
+                } else if (type === "installed") {
+                    renderInstalled(content);
+                } else if (type === "youtube") {
+                    renderYoutube(content);
+                }
+            }
+        }
+
+        function renderHome(el) {
+            const kinds = {};
+            state.targets.forEach(t => {
+                if (!kinds[t.kind]) kinds[t.kind] = [];
+                kinds[t.kind].push(t);
+            });
+
+            const order = ["player", "window", "app", "system", "command"];
+            let html = "";
+
+            order.forEach(kind => {
+                if (kinds[kind]) {
+                    const count = kinds[kind].length;
+                    html += `<div class="list-item" data-category="${escapeAttr(kind)}">`;
+                    html += `<span class="list-item-label">${capitalize(kind)}s</span>`;
+                    html += `<span class="list-item-value">${count}</span>`;
+                    html += `</div>`;
+                }
+            });
+
+            // Always offered, running or not: launching an app that is not
+            // open yet is the whole point of this row.
+            html += `<div class="list-item" data-nav="installed:apps">`;
+            html += `<span class="list-item-label">Installed apps</span>`;
+            html += `<span class="list-item-value">${installedApps ? installedApps.length : "search"}</span>`;
+            html += `</div>`;
+
+            // YouTube search
+            html += `<div class="list-item" data-nav="youtube:search">`;
+            html += `<span class="list-item-label">▶️ YouTube Search</span>`;
+            html += `<span class="list-item-value">search</span>`;
+            html += `</div>`;
+
+            el.innerHTML = html;
+        }
+
+        function renderInstalled(el) {
+            let html = '<div class="search-bar">';
+            html += `<input type="search" id="appSearch" placeholder="Search installed apps"
+                autocomplete="off" autocapitalize="off" spellcheck="false"
+                value="${escapeAttr(installedQuery)}">`;
+            html += '</div><div id="appList"></div>';
+            el.innerHTML = html;
+
+            renderAppList();
+            if (installedApps === null) fetchApps();
+        }
+
+        function renderAppList() {
+            // Only the list is rebuilt when the query changes: re-rendering the
+            // whole view would drop the caret and close the phone keyboard.
+            const list = document.getElementById("appList");
+            if (!list) return;
+
+            if (installedApps === null) {
+                list.innerHTML = installedError
+                    ? `<div class="empty">${escapeHtml(installedError)}</div>`
+                    : '<div class="empty">Loading...</div>';
+                return;
+            }
+
+            const tokens = installedQuery.toLowerCase().split(/\s+/).filter(Boolean);
+            const matches = installedApps.filter(app => {
+                if (!tokens.length) return true;
+                const hay = `${app.title} ${app.subtitle || ""} ${app.id}`.toLowerCase();
+                return tokens.every(tok => hay.includes(tok));
+            });
+
+            if (!matches.length) {
+                list.innerHTML = '<div class="empty">No matching apps</div>';
+                return;
+            }
+
+            let html = "";
+            matches.forEach(app => {
+                // Names, generic names and comments come from .desktop files on
+                // disk -- less hostile than a window title, but escaped all the
+                // same, since one bad entry would run script on this origin.
+                html += `<div class="list-item action" data-target="${escapeAttr(app.id)}" data-action="launch">`;
+                html += `<span class="list-item-icon">${escapeHtml(app.icon || "\u25b8")}</span>`;
+                html += `<span class="list-item-label">${escapeHtml(app.title)}</span>`;
+                if (app.subtitle) {
+                    html += `<span class="list-item-value">${escapeHtml(app.subtitle)}</span>`;
+                }
+                html += `</div>`;
+            });
+            list.innerHTML = html;
+        }
+
+        function renderCategory(el, kind) {
+            const targets = state.targets.filter(t => t.kind === kind);
+            if (!targets.length) {
+                el.innerHTML = '<div class="empty">No ' + kind + 's</div>';
+                return;
+            }
+
+            let html = "";
+            targets.forEach(t => {
+                // Every field here is attacker-influenced: window titles and MPRIS
+                // metadata come straight from whatever the user has open, so a page
+                // titled `<img onerror=...>` would otherwise run script on this
+                // origin -- where the API token lives in localStorage.
+                const icon = t.icon || "●";
+                html += `<div class="list-item" data-nav="target:${escapeAttr(t.id)}">`;
+                html += `<span class="list-item-icon">${escapeHtml(icon)}</span>`;
+                html += `<span class="list-item-label">${escapeHtml(t.title)}</span>`;
+                if (t.subtitle) {
+                    html += `<span class="list-item-value">${escapeHtml(t.subtitle)}</span>`;
+                }
+                html += `</div>`;
+            });
+            el.innerHTML = html;
+        }
+
+        function renderTarget(el, targetId) {
+            const target = state.targets.find(t => t.id === targetId);
+            if (!target) {
+                el.innerHTML = '<div class="empty">Target not found: ' + escapeHtml(targetId) + '</div>';
+                return;
+            }
+
+            let html = "";
+            html += `<div class="list-item"><span class="list-item-label" style="font-weight:bold">${escapeHtml(target.title)}</span></div>`;
+
+            if (target.subtitle) {
+                html += `<div class="list-item"><span class="list-item-value">${escapeHtml(target.subtitle)}</span></div>`;
+            }
+
+            if (target.status) {
+                html += `<div class="list-item"><span class="list-item-label">Status: <span style="color:var(--accent)">${escapeHtml(target.status)}</span></span></div>`;
+            }
+
+            if (target.position !== null && target.length !== null && target.length > 0) {
+                const pct = Math.round((target.position / target.length) * 100);
+                html += `<div class="list-item"><span class="list-item-label">Progress: ${pct}%</span></div>`;
+            }
+
+            // Sliders
+            const sliders = (target.actions || []).filter(a => a && a.kind === "slider");
+            sliders.forEach(action => {
+                const pct = Math.round((action.value || 0) * 100);
+                // Ids are not derived from target.id any more: escaping it for the
+                // attribute changed the string, so getElementById then looked up a
+                // name that was never in the document. The label is found by
+                // structure instead.
+                html += `<div class="slider-container">`;
+                html += `<div class="slider-label">${escapeHtml(action.label)}</div>`;
+                html += `<div class="slider-control">`;
+                html += `<input type="range" min="0" max="1" step="0.01" value="${Number(action.value) || 0}"
+                    data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(action.id)}">`;
+                html += `<span class="slider-value">${pct}%</span>`;
+                html += `</div></div>`;
+            });
+
+            // Buttons
+            const buttons = (target.actions || []).filter(a => a && a.kind !== "slider");
+            buttons.forEach(action => {
+                const isDanger = action.kind === "confirm";
+                html += `<div class="list-item action ${isDanger ? "danger" : ""}"
+                    data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(action.id)}"
+                    ${isDanger ? 'data-confirm="1"' : ""}>`;
+                html += `<span class="list-item-label">${escapeHtml(action.label)}</span>`;
+                html += `</div>`;
+            });
+
+            if (!target.actions || target.actions.length === 0) {
+                html += `<div class="empty" style="padding:16px">No actions</div>`;
+            }
+
+            el.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function escapeAttr(text) {
+            // Attribute values are parsed as markup too, so escape the same set
+            // as escapeHtml -- quotes alone leave `<` and `&` live.
+            return escapeHtml(text);
+        }
+
+        let sliderTimeout = null;
+        let youtubeSearchTimeout = null;
+        function handleSliderChange(input) {
+            const targetId = input.dataset.target;
+            const actionId = input.dataset.action;
+            const value = input.value;
+            // Paint the new value immediately; the server confirms a beat later.
+            const pct = Math.round(parseFloat(value) * 100);
+            const label = input.parentElement.querySelector(".slider-value");
+            if (label) label.textContent = pct + '%';
+
+            // Freeze re-renders while dragging so the thumb stays put.
+            holdRender(900);
+
+            clearTimeout(sliderTimeout);
+            sliderTimeout = setTimeout(() => {
+                doAction(targetId, actionId, parseFloat(value), {silent: true});
+                // Keep holding past the round trip: the next poll may still
+                // carry the pre-change reading and would snap the thumb back.
+                holdRender(900);
+            }, 120);
+        }
+
+        function handleAction(targetId, actionId, isConfirm) {
+            if (isConfirm) {
+                currentConfirm = {targetId, actionId};
+                document.getElementById("confirmText").textContent = `Confirm this action?`;
+                document.getElementById("confirmOverlay").classList.remove("hidden");
+            } else if (actionId === "launch") {
+                // Silent: a launch changes nothing this view shows, and a
+                // re-render would wipe the search box. The notice is the
+                // feedback instead.
+                doAction(targetId, actionId, undefined, {silent: true, notice: true});
+            } else {
+                doAction(targetId, actionId);
+            }
+        }
+
+        function doConfirm() {
+            if (currentConfirm) {
+                doAction(currentConfirm.targetId, currentConfirm.actionId);
+                cancelConfirm();
+            }
+        }
+
+        function cancelConfirm() {
+            currentConfirm = null;
+            document.getElementById("confirmOverlay").classList.add("hidden");
+        }
+
+        // Handlers are delegated rather than inlined into onclick=. An inline
+        // handler puts data in two parsers at once -- the HTML attribute parser
+        // decodes entities before JS sees the string -- so no single escape is
+        // correct there. Data attributes have exactly one parser.
+        function bindDelegatedHandlers() {
+            const content = document.getElementById("content");
+
+            content.addEventListener("click", (ev) => {
+                const category = ev.target.closest("[data-category]");
+                if (category) { navCategory(category.dataset.category); return; }
+
+                const nav = ev.target.closest("[data-nav]");
+                if (nav) { navPush(nav.dataset.nav); return; }
+
+                const action = ev.target.closest("[data-action]");
+                if (action && action.tagName !== "INPUT") {
+                    handleAction(
+                        action.dataset.target,
+                        action.dataset.action,
+                        action.dataset.confirm === "1"
+                    );
+                }
+            });
+
+            content.addEventListener("input", (ev) => {
+                if (ev.target.id === "appSearch") {
+                    installedQuery = ev.target.value;
+                    renderAppList();
+                    return;
+                }
+                if (ev.target.id === "youtubeSearch") {
+                    youtubeQuery = ev.target.value;
+                    youtubeResults = youtubeQuery.trim() ? null : [];
+                    youtubeError = "";
+                    renderYoutubeResults();
+                    if (youtubeQuery.trim()) {
+                        clearTimeout(youtubeSearchTimeout);
+                        youtubeSearchTimeout = setTimeout(fetchYoutubeResults, 600);
+                    }
+                    return;
+                }
+                const slider = ev.target.closest('input[type="range"][data-action]');
+                if (slider) handleSliderChange(slider);
+            });
+        }
+
+        function renderYoutube(el) {
+            let html = '<div class="search-bar">';
+            html += `<input type="search" id="youtubeSearch" placeholder="Search YouTube"
+                autocomplete="off" autocapitalize="off" spellcheck="false"
+                value="${escapeAttr(youtubeQuery)}">`;
+            html += '</div><div id="youtubeList"></div>';
+            el.innerHTML = html;
+            renderYoutubeResults();
+            if (youtubeQuery.trim() && youtubeResults === null) fetchYoutubeResults();
+        }
+
+        function renderYoutubeResults() {
+            const list = document.getElementById("youtubeList");
+            if (!list) return;
+
+            if (youtubeError) {
+                list.innerHTML = `<div class="empty">${escapeHtml(youtubeError)}</div>`;
+                return;
+            }
+
+            if (youtubeResults === null) {
+                list.innerHTML = youtubeQuery.trim()
+                    ? '<div class="empty">Searching...</div>'
+                    : '<div class="empty">Type to search YouTube</div>';
+                return;
+            }
+
+            if (!youtubeResults.length) {
+                list.innerHTML = '<div class="empty">No videos found</div>';
+                return;
+            }
+
+            let html = "";
+            youtubeResults.forEach((video, idx) => {
+                const mins = Math.floor(video.duration / 60);
+                const secs = video.duration % 60;
+                const dur = mins ? `${mins}:${String(secs).padStart(2, "0")}` : `${secs}s`;
+                html += `<div class="list-item action" data-target="youtube:${escapeAttr(video.url)}" data-action="play">`;
+                html += `<span class="list-item-label">${escapeHtml(video.title)}</span>`;
+                html += `<span class="list-item-value">${escapeHtml(video.channel)} · ${dur}</span>`;
+                html += `</div>`;
+            });
+            list.innerHTML = html;
+        }
+
+        function capitalize(s) {
+            return s.charAt(0).toUpperCase() + s.slice(1);
+        }
+
+        // === Startup ===
+        initToken();
+        bindDelegatedHandlers();
+        updateUI();
+        setInterval(updateUI, POLL_INTERVAL);
+    </script>
+</body>
+</html>

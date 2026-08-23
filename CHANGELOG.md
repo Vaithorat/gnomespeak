@@ -1,5 +1,68 @@
 # Changelog
 
+## [3.0.0] — 2026-08-23
+
+Complete rewrite. VoiceTalk was a Windows-only Python server with a
+CustomTkinter GUI plus a React Native Android app; it is now a Linux CLI
+(`vt`) that serves a self-contained web UI to any browser on the LAN.
+
+### Removed
+- **The entire v2 stack** — `client/` (React Native app and Gradle build),
+  `server/` (Windows GUI, LLM intent parser, PowerShell/pyautogui/pycaw/
+  Playwright handlers, Fernet config), and the OpenSpec specs describing them.
+  All of it stays recoverable in git history.
+- **The LLM agent loop** — v3 performs deterministic, pre-configured actions
+  only. No provider keys, no prompt, no tool dispatcher.
+
+### Added
+- **`vt` CLI** — `serve`, `status`, `do`, `apps`, `commands`, `doctor`, and
+  `install-extension`.
+- **Web UI** — one self-contained `vt/ui/index.html`, no build step. Open the
+  printed URL on a phone; it polls `/api/state` over HTTP and auto-reconnects.
+- **Token auth** — a 22-char random token is generated per run and required on
+  every `/api/*` request.
+- **MPRIS players** — play/pause, seek, and volume, gated on the capabilities
+  each player actually reports (`CanPause`, `CanSeek`, …).
+- **System audio** — volume and mute via `wpctl` (PipeWire).
+- **Installed apps** — `GET /api/apps` lists every `.desktop` entry as a
+  launchable target; the UI filters as you type, and `launcher:<desktop-id>` +
+  `launch` works from the UI and from `vt do`. Apps need not already be running.
+- **Window control** — an optional GNOME extension exposes stable window IDs
+  over D-Bus for `List`/`Focus`/`Close`; absent it, vt degrades gracefully.
+- **YouTube search** — `GET /api/youtube?q=` searches via `yt-dlp` and returns
+  title, channel, and duration. Tap a result to open it.
+- **YouTube playback control** — appears only on X11, where `xdotool` and
+  `wmctrl` can synthesise keystrokes.
+- **Pre-configured commands** — `~/.config/voicetalk/commands.toml`, where `run`
+  is always an argv list and never a shell string, validated on startup.
+
+### Fixed
+- **YouTube search returning nothing** — `yt-dlp` present in a venv but not to
+  the running interpreter now reports "yt-dlp is not available to this
+  interpreter" with install instructions, instead of an empty result list.
+- **Playback controls that silently did nothing** — keystroke controls are
+  hidden on Wayland, which forbids client-to-client input synthesis, and the UI
+  points at the MPRIS player instead.
+- **Search box losing focus while typing** — the 1 Hz state poll re-rendered the
+  view underneath the user; a view signature now suppresses no-op re-renders.
+- **D-Bus log flood under snap confinement** — every proxy is built with
+  `introspect=False`, so a player refusing `Introspect` no longer logs an error
+  per player per second. `Seek` passes an explicit `dbus.Int64`, which
+  introspection used to supply.
+- **Media players silently missing** — an `AccessDenied` from a snap-packaged
+  player is recognised and reported once, naming the AppArmor confinement that
+  caused it, instead of looking identical to "nothing is playing".
+- **Flatpak apps collapsing onto one entry** — `Exec=/usr/bin/flatpak run ...`
+  was indexed under `flatpak`, so the first flatpak app scanned shadowed all
+  the others.
+- **Newly installed apps invisible** — the `.desktop` scan was cached for the
+  life of the process; it now refreshes every 60 seconds.
+
+### Requirements
+- Linux with GNOME Shell 45+, systemd, and PipeWire/ALSA; Python 3.11+.
+- Wayland and X11 are both supported; the keystroke-based YouTube controls are
+  X11-only.
+
 ## [2.2.0] — 2026-07-19
 
 ### Added

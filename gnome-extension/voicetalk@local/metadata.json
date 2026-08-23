@@ -1,0 +1,7 @@
+{
+  "name": "VoiceTalk",
+  "description": "Window control for VoiceTalk remote",
+  "version": "3.0.0",
+  "uuid": "voicetalk@local",
+  "shell-version": ["50"]
+}

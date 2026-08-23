@@ -2,237 +2,212 @@
 
 ## Overview
 
-VoiceTalk is a voice-controlled interface between an Android phone and a Windows PC. The user speaks commands on their phone, which are transcribed on-device, sent over WebSocket to a Python server on the PC, and executed as system actions via an AI agent.
+VoiceTalk is a Linux CLI that reports what is running on your PC and serves a
+small web page any phone browser can open. There is no app to install, no voice
+pipeline, and no language model — the phone shows real system state and invokes
+a fixed set of concrete actions.
 
 ```
-┌──────────────────────────┐         ┌──────────────────────────────────────┐
-│   Android Phone           │         │       Windows PC                     │
-│  (React Native)           │         │      (Python Server)                 │
-│                           │         │                                      │
-│  ┌───────────────────┐    │         │  ┌────────────────────────────────┐  │
-│  │ RecordButton       │    │         │  │  IntentParser                  │  │
-│  │ (on-device STT)    │    │  ws://  │  │  • OpenAI agent loop           │  │
-│  ├───────────────────┤    ├─────────┼──┤  • Gemini native function call  │  │
-│  │ ConversationThread │    │         │  │  • OpenCode / OpenRouter        │  │
-│  │ (chat UI)          │    │         │  │  • Regex fallback               │  │
-│  ├───────────────────┤    │         │  └──────────────┬─────────────────┘  │
-│  │ 3 Modes:           │    │         │                 │                    │
-│  │ • Voice (PTT)      │    │         │  ┌──────────────▼─────────────────┐  │
-│  │ • Conversation     │    │         │  │  CommandExecutor (async)       │  │
-│  │ • Chat (text)      │    │         │  │  (tool dispatch)               │  │
-│  └───────────────────┘    │         │  └──┬───┬───┬───┬───┬───┬───┬────┘  │
-│                           │         │     │   │   │   │   │   │   │        │
-│  ┌───────────────────┐    │         │     ▼   ▼   ▼   ▼   ▼   ▼   ▼        │
-│  │ ConnectionStatus   │    │         │  ┌────────────────────────────────┐  │
-│  │ ClarificationDialog│    │         │  │  Handlers:                    │  │
-│  │ CommandLog          │    │         │  │  • BrowserControl (Playwright)│  │
-│  │ SettingsScreen     │    │         │  │  • FileOps                    │  │
-│  └───────────────────┘    │         │  │  • AppLauncher                │  │
-│                           │         │  │  • EmailSender                 │  │
-│                           │         │  │  • BluetoothControl            │  │
-│                           │         │  │  • MediaPlayer                 │  │
-│                           │         │  │  • MediaControl (pyautogui)    │  │
-│                           │         │  └────────────────────────────────┘  │
-│                           │         └──────────────────────────────────────┘
-└──────────────────────────┘
+┌──────────────────────┐          ┌──────────────────────────────────────────┐
+│   Phone browser      │          │   Linux PC — python3 -m vt serve         │
+│                      │          │                                          │
+│  index.html          │  HTTP    │  ┌────────────────────────────────────┐  │
+│  • polls /api/state  ├──────────┤  │ server.py (aiohttp)                │  │
+│    once a second     │  1 Hz    │  │ • token auth (X-VT-Token)          │  │
+│  • posts /api/do     │          │  │ • snapshot cache, refreshed at 1Hz │  │
+│  • token in          │          │  │ • one worker thread for blocking   │  │
+│    localStorage      │          │  └───────────┬───────────┬────────────┘  │
+└──────────────────────┘          │              │           │               │
+                                  │   state.py ──┘           └── actions.py  │
+                                  │      │                          │        │
+                                  │      ▼                          ▼        │
+                                  │  ┌────────────────┐   ┌──────────────┐   │
+                                  │  │ sources/       │   │ execute_     │   │
+                                  │  │ • mpris.py     │   │ action()     │   │
+                                  │  │ • windows.py   │   │              │   │
+                                  │  │ • apps.py      │   │ wpctl        │   │
+                                  │  │ • audio.py     │   │ D-Bus        │   │
+                                  │  │ commands.py    │   │ pkill        │   │
+                                  │  └───────┬────────┘   │ argv exec    │   │
+                                  │          │            └──────┬───────┘   │
+                                  └──────────┼───────────────────┼───────────┘
+                                             ▼                   ▼
+                                    D-Bus · PipeWire · /proc · GNOME Shell
 ```
 
-## Communication Protocol
+`vt/cli.py` is the other entry point. `vt status` prints the same snapshot
+`/api/state` returns, and `vt do` calls the same `execute_action` the server
+calls — the CLI and the web UI cannot drift apart.
 
-### WebSocket (JSON)
+## The model
 
-| Direction | Type | Purpose |
-|-----------|------|---------|
-| Client → Server | `command` | Voice transcript + API key + provider + session_id |
-| Server → Client | `result` | Command execution result (`success`, `message`) |
-| Server → Client | `stream_chunk` | Incremental AI response text (`content`) |
-| Server → Client | `stream_result` | Final result after streaming completes (`success`, `message`) |
-| Server → Client | `question` | Agent asks user for clarification (`id`, `message`, `options`) |
-| Client → Server | `answer` | User's response to agent clarification |
-| Client → Server | `ping` | Heartbeat keep-alive (30s interval) |
-| Server → Client | `pong` | Heartbeat response |
+Everything the user can act on is a **Target**; everything they can do to it is
+an **Action** (`vt/model.py`).
 
-### Command Flow
-
-```
-User speaks → on-device STT → WebSocket command (with session_id)
-  → IntentParser.parse_stream() (async generator)
-    → [OpenAI] Agent loop — function calling, max 10 iterations, streaming
-    → [Gemini] Agent loop — native function calling, max 5 iterations, streaming
-    → [OpenCode/OpenRouter] Agent loop — OpenAI-compatible API, streaming
-    → [No API key] Regex fallback
-  → Yields stream_chunk → Server sends incremental text to client
-  → CommandExecutor.execute_tool() (async)
-    → SafetyChecker intercepts destructive tools (delete/move/copy/overwrite)
-    → If confirmation required → ask_user flow → user confirms/denies
-  → Handler executes → result returned to client
-  → stream_result sent → Session history stored for multi-turn context
+```python
+Target(id="mpris:org.mpris.MediaPlayer2.firefox", kind="player",
+       title="Cars 2", subtitle="Firefox", status="playing",
+       position=812.0, length=6132.0,
+       actions=[Action(id="play_pause", label="Pause"), ...])
 ```
 
-### Question/Answer Flow
+- `id` is always `"<kind>:<spec>"`. The dispatcher splits on the first colon,
+  so the spec may contain colons of its own (MPRIS bus names do).
+- `kind` is one of `player`, `window`, `app`, `system`, `command`, `launcher`, `youtube`.
+- Actions are **capability-driven**: a player that reports `CanGoNext = false`
+  gets no Next button. The UI renders what the snapshot offers and nothing more.
+- `Action.kind` is `button`, `slider` (a 0..1 value), or `confirm` (destructive;
+  the UI asks first).
 
+## Sources
+
+`vt/state.py` assembles one `Snapshot` per refresh by calling each source in
+turn. Every source degrades to `[]` rather than raising, so a missing optional
+dependency costs you one section of the UI, not the server.
+
+| Source | Reads | Requires |
+| --- | --- | --- |
+| `sources/mpris.py` | Players, metadata, position, capabilities | `python3-dbus` |
+| `sources/windows.py` | Open windows on the active workspace | GNOME extension |
+| `sources/apps.py` | Running apps, matched to `.desktop` entries | `psutil` |
+| `sources/apps.py` | Installed apps (`/api/apps`, not the snapshot) | — |
+| `sources/youtube.py` | YouTube search results (`/api/youtube`, not the snapshot) | `yt-dlp` |
+| `sources/audio.py` | Default sink volume and mute | `wpctl` (PipeWire) |
+| `commands.py` | User-defined commands | `~/.config/voicetalk/commands.toml` |
+
+## The GNOME extension
+
+`gnome-extension/voicetalk@local/` exports three D-Bus methods on
+`org.gnome.Shell.Extensions.VoiceTalk`: `List() → JSON`, `Focus(id)`, and
+`Close(id)`. Window ids are Mutter stable sequences, which survive restacking.
+
+It is optional. Without it, the Windows section is empty and app Focus fails
+with a clear message — everything else works.
+
+Two operational notes, both learned the hard way:
+
+- **GNOME Shell caches extension ES modules.** `gnome-extensions disable`
+  followed by `enable` re-runs the *old* code. Editing `extension.js` requires a
+  full shell restart, which on Wayland means logging out and back in.
+- **A JS exception inside the extension arrives as a D-Bus error**, exactly like
+  the extension being absent. `actions.shell_error()` separates them: only
+  `ServiceUnknown`/`NameHasNoOwner` mean "not installed"; anything else is
+  reported verbatim. Collapsing the two once hid a live `TypeError` behind
+  "GNOME extension not available" and sent debugging in the wrong direction.
+
+## Server
+
+`vt/server.py` is aiohttp with three routes:
+
+| Route | Auth | Purpose |
+| --- | --- | --- |
+| `GET /` | none | Serves the UI; `?t=<token>` stores the token and reloads |
+| `GET /api/state` | token | Current snapshot as JSON |
+| `GET /api/apps` | token | Installed apps, optionally filtered by `?q=` |
+| `GET /api/youtube` | token | YouTube videos, searched by `?q=` |
+| `POST /api/do` | token | `{target, action, value?}` → `{ok, message}` |
+
+**Why installed apps are not in the snapshot.** They are a different kind of
+data: hundreds of rows that change about once a week, against a snapshot of a
+handful of rows that change every second. Folding them in would have made every
+1 Hz poll, from every phone, mostly a re-send of the applications menu. `/api/apps`
+is fetched once when the user opens the list; the search then filters client-side,
+so typing costs the PC nothing. The scan behind it is cached for 60 seconds, which
+is also what lets a long-running server notice an app installed after startup.
+
+Launching goes back through the ordinary `/api/do` path as `launcher:<desktop-id>`
+with the action `launch`, so the CLI reaches it too (`vt do launcher:firefox launch`).
+`gio launch` runs the entry when glib's CLI is present, because it applies the
+desktop file's own semantics — field codes, `Terminal=true`, `DBusActivatable` —
+instead of our approximation of them; the parsed argv is the fallback. Either way
+the child gets its own session, so Ctrl+C on `vt serve` does not close the browser
+it just opened.
+
+**Concurrency.** Snapshot collection and action execution are both blocking
+(subprocess, D-Bus). They run on a single-worker `ThreadPoolExecutor`, not the
+event loop: a configured command with a 10-second timeout used to stall every
+other request. One worker, not a pool — python-dbus shares a connection, so the
+calls must stay serialized.
+
+**Snapshot cache.** A background task refreshes at 1 Hz and `/api/state` serves
+the cached copy, so N phones cost the same as one.
+
+## YouTube Search
+
+`/api/youtube` searches YouTube using `yt-dlp` and returns video metadata: id,
+title, channel, duration, and a watch URL. The search has a 5-second timeout and
+returns up to 15 results. The phone renders them as clickable items that open in
+the browser. The search is live: typing updates results in real time, cached for
+0.6 seconds to avoid hammering yt-dlp.
+
+## D-Bus under confinement
+
+Two operational lessons live in the D-Bus code.
+
+**Nothing introspects.** Every proxy is built with `introspect=False`, since the
+interface is always named explicitly a line later. The round trip bought nothing
+and cost a great deal: a player that refuses `Introspect` made dbus-python log an
+error of its own, for every player, on every 1 Hz refresh. The one thing
+introspection did provide was argument signatures, so `Seek` now passes an
+explicit `dbus.Int64` — a bare Python int would be guessed as int32 and rejected.
+
+**AccessDenied is not "no players".** A `vt` started from a snap's built-in
+terminal — the VS Code snap's, most often — inherits that snap's AppArmor label,
+and snapd's policy then blocks it from reaching other snaps. Snap-packaged
+Firefox refuses every property read, `_get` returns the default, the player is
+dropped for want of a `PlaybackStatus`, and the UI shows exactly what it shows
+when nothing is playing. The denial is now recognised, reported once with the
+confinement label that caused it (`actions.confinement_label`), and checked by
+`vt doctor`, which reads a real property rather than trusting the bus-name list.
+No code can lift the policy: the fix is to start `vt` from an ordinary terminal.
+
+## Security model
+
+VoiceTalk assumes a trusted LAN and defends the boundary at three points.
+
+1. **Token auth.** A 22-character `secrets.token_urlsafe(16)` is generated per
+   run and required on every `/api/*` request, compared with
+   `secrets.compare_digest`. `--no-token` disables it and says so loudly.
+2. **No arbitrary execution.** `/api/do` takes a target id and an action id, not
+   a command. Configured commands are addressed by id; their `run` must be an
+   argv list, and a string is rejected at load time — `subprocess` is never
+   invoked with `shell=True`.
+3. **Untrusted text stays text.** Window titles and MPRIS metadata are whatever
+   the user has open — a web page title becomes a Firefox window title. The UI
+   escapes every field it renders and passes data through `data-*` attributes
+   rather than inline `onclick` handlers, because an inline handler puts the
+   value through two parsers (HTML entities, then JS) and no single escape is
+   correct for both. The token-capture page reads `?t=` from `location.search`
+   in the browser instead of reflecting it into the response.
+
+The remaining exposure is the network itself: plain HTTP, so anyone who can
+sniff the LAN can read the token. That is the documented trade-off — run it on a
+network you trust, or put it behind a reverse proxy with TLS.
+
+## Configuration
+
+`~/.config/voicetalk/commands.toml` (or `$XDG_CONFIG_HOME/voicetalk/`):
+
+```toml
+[[command]]
+id = "lock"
+label = "Lock screen"
+run = ["loginctl", "lock-session"]   # argv, never a shell string
+icon = "🔒"
+confirm = true                        # UI asks before running
 ```
-Agent calls ask_user() → server sends {"type": "question", ...}
-  → Client shows ClarificationDialog (options + free text)
-  → User responds → Client sends {"type": "answer", ...}
-  → Server resolves pending Future → agent loop continues with answer
-```
 
-## Server Components
+Validation happens at load. Invalid entries are skipped with a message rather
+than failing the server: a typo in one command should not take the remote down.
+Ids may not shadow a built-in action name (`volume`, `mute`, `focus`, …), since
+command targets are addressed as `command:<id>` with the action `run`.
 
-### config.py
-Manages encrypted secrets using Fernet (AES-128-CBC). Master password generated randomly on first run via `secrets.token_urlsafe(24)` and stored in `.master` file. Auto-unlocks on subsequent starts by reading `.master` — no manual password entry required.
+## Testing
 
-### intent_parser.py
-Core AI integration. Supports 5 providers with streaming:
+`pytest` covers models, sources, command validation, server auth, dispatch, and
+the injection regressions. `tests/test_ui.py` runs the real UI render functions
+under node with DOM stubs and asserts that hostile window titles come out as
+text — the escaping is tested, not just read.
 
-| Provider | SDK | Agent Loop | Native Function Calling |
-|----------|-----|------------|------------------------|
-| OpenAI | `openai` (AsyncOpenAI) | Up to 10 iterations | Yes |
-| Gemini | `google.genai` | Up to 5 iterations | Yes (native FunctionDeclaration) |
-| OpenCode | `openai` (custom base URL) | Up to 10 iterations | Yes |
-| OpenRouter | `openai` (custom base URL) | Up to 10 iterations | Yes |
-| Ollama | `openai` (localhost:11434) | Up to 10 iterations | Yes |
-
-**Streaming:** `parse_stream()` is an async generator yielding `{type: "chunk", content}` and `{type: "tool_result", ...}` messages. Sentence-level chunking via regex (`[.!?]\s|\n`), max 500 chars per chunk. OpenAI uses `stream=True` + `stream_options`. Gemini appends user message outside tool loop.
-
-**Session management:** Conversations tracked by `session_id`. Max 50 sessions, max 100 messages per session. LRU eviction when limit exceeded.
-
-**System prompt:** Enforces full PC autonomy — AI never asks user to click/tap. English-only responses. Error recovery protocol. YouTube single-tab rules. Environment model context injected (desktop files, installed apps, recent folders).
-
-### command_executor.py
-Async tool dispatch. Routes 23 tool names to 7 handler modules. Includes SafetyChecker (intercepts destructive operations for user confirmation) and EnvironmentModel (cached desktop/apps/folders). File operations refresh affected folders in the environment cache. Includes safe `int()` conversion for volume level.
-
-### Handlers
-
-| Handler | Tools | Backend |
-|---------|-------|---------|
-| `browser_control.py` | `browser_navigate`, `browser_search`, `yt_play`, `yt_search`, `yt_results` | **Playwright** (async Chromium) for YouTube; `webbrowser` for general browsing; **yt-dlp** for search |
-| `file_ops.py` | `navigate`, `list_dir`, `create_file`, `create_folder`, `delete`, `copy`, `move` | Python stdlib (`os`, `shutil`, `pathlib`) |
-| `app_launcher.py` | `open_app` | PowerShell `Get-StartApps` → Start Menu scan → common dirs → `os.startfile()` |
-| `email_sender.py` | `send_email` | `smtplib` with TLS |
-| `bluetooth_control.py` | `control_bluetooth` (on/off/scan/status, connect/disconnect with winrt) | PowerShell |
-| `media_player.py` | `play_media`, `volume_up`, `volume_down`, `volume_mute`, `set_volume` | `pycaw` (set_volume), `os.startfile`, PowerShell |
-| `media_control.py` | `media_control` (play_pause, skip, volume, fullscreen, etc.) | **pyautogui** keyboard simulation |
-
-### Browser Automation (Playwright)
-
-The browser handler uses a hybrid approach:
-
-- **YouTube playback** (`yt_play`): Uses Playwright's async Chromium to navigate to the video page and auto-play via JavaScript `v.play()`. Single persistent browser instance. All navigation happens in one tab.
-- **General browsing** (`browser_navigate`, `browser_search`): Uses Playwright to navigate in the persistent browser instance.
-- **YouTube search data** (`yt_results`): Uses `yt-dlp` CLI for fast, reliable search without browser overhead.
-
-## Client Components
-
-### Three Modes
-
-| Mode | UI | How It Works |
-|------|-----|-------------|
-| **Voice** (default) | Push-to-talk button | Hold mic → speak → release → send once |
-| **Conversation** | Continuous thread + listening bar | Always listening, 1.5s silence auto-sends, multi-turn |
-| **Chat** | Text input + send button | Type messages, same session as voice mode |
-
-### Components
-
-| Component | Purpose |
-|-----------|---------|
-| `App.tsx` | Navigation stack + AppContext provider (pastel → flat redesign) |
-| `HomeScreen.tsx` | Main screen — 3 modes, pipeline status, command log, session management |
-| `SettingsScreen.tsx` | Server URL + 4 API keys (OpenAI, Gemini, OpenCode, OpenRouter) with show/hide |
-| `RecordButton.tsx` | Push-to-talk with permissions, error handling, recording state |
-| `ConversationThread.tsx` | FlatList of user/assistant/question bubbles with live transcription |
-| `useConversationMode.ts` | Continuous STT lifecycle, silence detection, session management |
-| `ClarificationDialog.tsx` | Modal with option buttons + free-text input |
-| `CommandLog.tsx` | Scrollable log with success/failure indicators |
-| `ConnectionStatus.tsx` | Colored dot indicator (green/yellow/gray/red) |
-| `websocket.ts` | Auto-reconnect with exponential backoff, 30s ping, URL normalization |
-| `storage.ts` | AsyncStorage wrapper for settings persistence |
-| `types/index.ts` | TypeScript interfaces + `getActiveProvider()` utility |
-
-## Tool Definitions (23 Tools)
-
-| # | Tool | Description |
-|---|------|-------------|
-| 1 | `browser_navigate` | Open a URL in the default browser |
-| 2 | `browser_search` | Web search (Google/Bing/DuckDuckGo) |
-| 3 | `yt_play` | Search + open + auto-play YouTube video (Playwright) |
-| 4 | `yt_search` | Open YouTube search results page |
-| 5 | `yt_results` | Fetch top 10 YouTube results with titles (yt-dlp) |
-| 6 | `open_app` | Launch a Windows application |
-| 7 | `navigate` | Open file/folder in Explorer |
-| 8 | `list_dir` | List directory contents |
-| 9 | `create_file` | Create file with optional content |
-| 10 | `create_folder` | Create directory |
-| 11 | `delete` | Delete file/folder |
-| 12 | `copy` | Copy file/folder |
-| 13 | `move` | Move/rename file/folder |
-| 14 | `send_email` | Send email via configured SMTP |
-| 15 | `control_bluetooth` | BT radio on/off/scan/connect/disconnect |
-| 16 | `get_system_info` | OS version, Bluetooth hardware info |
-| 17 | `play_media` | Search and play local music files |
-| 18 | `volume_up` | Increase system volume |
-| 19 | `volume_down` | Decrease system volume |
-| 20 | `volume_mute` | Toggle mute |
-| 21 | `set_volume` | Set volume to specific level |
-| 22 | `media_control` | Keyboard actions (play/pause, skip, fullscreen, etc.) |
-| 23 | `ask_user` | Ask user for clarification via phone dialog |
-
-## Security
-
-- **Random master password** — Generated on first run via `secrets.token_urlsafe(24)`, stored in `.master` file. No hardcoded passwords.
-- **Encrypted config** — API keys and SMTP credentials encrypted at rest using Fernet (PBKDF2-HMAC-SHA256, 600k iterations)
-- **Auto-unlock** — Reads `.master` file on startup — no manual password entry required
-- **`config.json` gitignored** — Encrypted secrets file excluded from version control
-- **WebSocket on local network only** — No internet exposure (binds `0.0.0.0:8765`)
-- **Session limits** — Max 50 sessions, 100 messages each, LRU eviction prevents memory exhaustion
-- **Safe imports** — `google.genai` wrapped in try/except — server starts without Gemini SDK
-- **Safe volume conversion** — `int()` wrapped in try/except ValueError/TypeError
-- **PowerShell injection prevention** — App names escaped with single-quote doubling before embedding in PS commands
-
-## Safety System
-
-`server/safety.py` provides destructive operation protection:
-
-- **Intercepted tools:** `delete`, `move`, `copy`, `create_file` (when overwriting)
-- **Flow:** SafetyChecker.check() → ask_user() → user confirms/denies → operation proceeds or is cancelled
-- **Safe default:** On exception or timeout, destructive operations are denied (not approved)
-- **Configurable:** `SafetyChecker.enabled` flag can disable checks (used in tests)
-
-## Environment Model
-
-`server/env_model.py` provides cached system awareness:
-
-- **Desktop files** — Up to 30 filenames and types from `~/Desktop`
-- **Installed apps** — Up to 50 app names from Start Menu (`.lnk`, `.exe` files)
-- **Recent folders** — Up to 10 recently browsed folder paths with item counts
-- **Lazy refresh** — Refreshes on access if stale (>15 minutes since last refresh)
-- **Background refresh** — Full refresh runs as asyncio task (non-blocking)
-- **Context injection** — `build_context_prompt()` output appended to system prompt on every AI request
-- **Folder updates** — File operations refresh affected folders via `refresh_folder()`
-
-## Data Privacy
-
-`server/redactor.py` (planned) sanitizes tool results before AI API calls:
-
-| Privacy Level | Behavior |
-|---------------|----------|
-| `full` | No redaction — all data sent to AI provider |
-| `smart` | Redacts file contents, email bodies; keeps paths/URLs |
-| `strict` | Redacts all file paths, directory listings, URLs, device names |
-
-**Redaction rules:**
-- File paths → `[file:name.ext]`
-- Directory listings → `[N items: X files, Y folders]`
-- Browser URLs → `[opened: domain.com]`
-- Email bodies → `[email body redacted]`
-- System info → OS/arch only, no Bluetooth device names
-
-## Device Pairing (Planned)
-
-`server/pairing.py` — TeamViewer-style secure pairing:
-
-- **First connection:** 6-digit code displayed on Windows GUI, entered on phone
-- **Subsequent connections:** Trusted device token (`vt_` prefix) auto-authenticates
-- **Token storage:** Encrypted in config via Fernet
-- **Rate limiting:** 5 attempts per code, code expires after 5 minutes
+CI runs the suite on Python 3.11–3.13 with `dbus-python` installed, plus a
+second job without it that asserts the degraded path still imports and serves.
