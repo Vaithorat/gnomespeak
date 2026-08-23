@@ -35,8 +35,31 @@ CustomTkinter GUI plus a React Native Android app; it is now a Linux CLI
   `wmctrl` can synthesise keystrokes.
 - **Pre-configured commands** — `~/.config/voicetalk/commands.toml`, where `run`
   is always an argv list and never a shell string, validated on startup.
+- **`vt allow-autoplay`** — sets `media.autoplay.default` in the Firefox
+  profile's `user.js` (the same setting as Settings → Privacy & Security →
+  Autoplay → Allow Audio and Video), with `--status`, `--revert`, and
+  `--restart`. Reverting says so plainly when Firefox has already copied the
+  value into its own `prefs.js`, where vt cannot take it back.
+- **`Makefile`** — one way to run the project. `make dev` builds the venv if it
+  is missing and starts the server through `venv/bin/vt` by absolute path, so a
+  VS Code terminal, a plain shell, and a different working directory all produce
+  the same result; `VIRTUAL_ENV`, `PYTHONPATH`, and `PYTHONHOME` from the
+  calling shell are dropped rather than inherited. Also `setup`, `test`,
+  `doctor`, `env` (prints the resolved interpreter and which optional deps it
+  can see), `link` (puts `vt` on `$PATH`), `clean`, and `reset`.
 
 ### Fixed
+- **A video opened from the phone that never started playing** — tapping a
+  search result ran `xdg-open` and reported "Playing video", but Firefox blocks
+  autoplay of audible media by default, so the tab loaded paused. Nothing
+  played, no MPRIS player was published, and the video never appeared under
+  Players; the only way to find out was to walk to the PC and press play, which
+  is the one thing a phone remote exists to avoid. vt now reads the browser's
+  autoplay policy (`sources/browser_autoplay.py`), says which of the two
+  actually happened, and offers the fix: `vt allow-autoplay` on the PC, or an
+  "Allow autoplay" button on the YouTube screen that sets the pref, restarts
+  Firefox, and reopens the video that failed — so the tap completes itself.
+  `vt doctor` reports the policy under `Autoplay`.
 - **YouTube search returning nothing** — `yt-dlp` present in a venv but not to
   the running interpreter now reports "yt-dlp is not available to this
   interpreter" with install instructions, instead of an empty result list.
@@ -57,6 +80,13 @@ CustomTkinter GUI plus a React Native Android app; it is now a Linux CLI
   the others.
 - **Newly installed apps invisible** — the `.desktop` scan was cached for the
   life of the process; it now refreshes every 60 seconds.
+- **Seek buttons that broke the player they controlled** — Firefox reports
+  `CanSeek=true` but implements neither `Seek` nor `SetPosition`. Either call
+  returned without error, playback did not move, and the player then reported
+  `Position=0` with no `mpris:length` for the rest of the track, so the progress
+  readout never came back. Seek is now withheld from players known to
+  misreport it, and the target says why instead of leaving a silent gap.
+  Players that do implement seeking (VLC, mpv, Spotify) are unaffected.
 
 ### Requirements
 - Linux with GNOME Shell 45+, systemd, and PipeWire/ALSA; Python 3.11+.

@@ -13,6 +13,28 @@ except ImportError:
 ROOT_IFACE = "org.mpris.MediaPlayer2"
 PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 
+# Players whose CanSeek is not to be believed.
+#
+# Firefox sets CanSeek=true but implements neither Seek nor SetPosition. The
+# call returns without error and playback does not move; worse, it resets the
+# player's reported Position to 0 and drops mpris:length from Metadata for the
+# rest of the track, so the progress readout never comes back. A button that
+# silently breaks the display it sits next to is worse than no button, so seek
+# is withheld here and `seek_unavailable` says why. Firefox forks ship the same
+# media backend and inherit the bug.
+SEEK_LIARS = ("firefox", "librewolf", "waterfox", "floorp")
+
+SEEK_UNAVAILABLE_REASON = (
+    "This player reports it can seek but does not implement it; "
+    "seeking would freeze its progress display. Seek in the page instead."
+)
+
+
+def _seek_is_trustworthy(bus_name: str, identity: str) -> bool:
+    """False for players known to advertise CanSeek and not implement it."""
+    probe = f"{bus_name} {identity}".lower()
+    return not any(liar in probe for liar in SEEK_LIARS)
+
 # Set the first time a player refuses to answer. A denial is indistinguishable
 # from "no players are running" in the UI, so it has to be said out loud.
 _denied_hint: Optional[str] = None
@@ -133,6 +155,9 @@ def get_mpris_targets() -> list[Target]:
             can_next = bool(_get(props, PLAYER_IFACE, "CanGoNext", False))
             can_prev = bool(_get(props, PLAYER_IFACE, "CanGoPrevious", False))
             can_seek = bool(_get(props, PLAYER_IFACE, "CanSeek", False))
+            seek_trusted = _seek_is_trustworthy(name, app_name)
+            seek_unavailable = can_seek and not seek_trusted
+            can_seek = can_seek and seek_trusted
             can_raise = bool(_get(props, ROOT_IFACE, "CanRaise", False))
 
             # MPRIS reports time in microseconds; convert at the boundary.
@@ -190,6 +215,7 @@ def get_mpris_targets() -> list[Target]:
                     status=status,
                     position=position_sec if length_sec > 0 else None,
                     length=length_sec if length_sec > 0 else None,
+                    note=SEEK_UNAVAILABLE_REASON if seek_unavailable else "",
                     actions=actions,
                 )
             )

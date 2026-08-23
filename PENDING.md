@@ -7,7 +7,7 @@
 - ✅ **YouTube search** — Find and play YouTube videos via `yt-dlp`
 - ✅ **D-Bus/snap confinement handling** — Diagnosed and reported clearly
 - ✅ **Error reporting** — Real reasons shown instead of silent failures
-- ✅ **Full test coverage** — 94 tests, all passing
+- ✅ **Full test coverage** — 97 tests, all passing
 
 ## Known Limitations (By Design)
 
@@ -27,7 +27,13 @@
 ### "YouTube search shows no results"
 **Root cause:** `yt-dlp` installed in venv but not available to system Python  
 **Status:** ✅ Fixed — now shows "yt-dlp is not available to this interpreter" with install instructions  
-**Affected:** Users running `python3 -m vt serve` (system Python) instead of `venv/bin/python -m vt serve`
+**Affected:** Users running `python3 -m vt serve` (system Python) instead of the project venv  
+**Prevented by:** `make dev`, which always runs `venv/bin/vt` by absolute path
+
+### "I tap a video on the phone and still have to press play on the PC"
+**Root cause:** Firefox blocks autoplay of audible media by default, so the tab opened paused and published no MPRIS player  
+**Status:** ✅ Fixed — `vt allow-autoplay` sets the pref, `vt doctor` reports it, and the YouTube screen offers a one-tap fix that restarts Firefox and resumes the video  
+**Note:** the setting only applies at Firefox startup, which is why the fix restarts it
 
 ### "YouTube videos won't control"
 **Root cause:** Running on Wayland; keystroke injection can only work on X11  
@@ -61,13 +67,14 @@
 
 1. **Snap confinement** — snapd policy intentionally isolates confined apps; use real terminal
 2. **Wayland keystrokes** — Wayland security model blocks input synthesis; use MPRIS instead
-3. **Firefox MPRIS gap** — Firefox only exposes MPRIS when at least one media element is playing; can't pre-stage controls
-4. **Window IDs** — GNOME extension stable window IDs work only on GNOME (no KDE/XFCE support)
-5. **Android app** — v3 is CLI + web UI; native Android would need separate codebase
+3. **Firefox MPRIS gap** — Firefox only exposes MPRIS when at least one media element is playing; can't pre-stage controls. Press play once in the tab and the player appears under Players.
+4. **Firefox cannot seek** — Firefox advertises `CanSeek=true` but implements neither `Seek` nor `SetPosition`. Calling either does not move playback and permanently resets the player's reported `Position` to 0 and drops `mpris:length` for the rest of the track. vt therefore withholds seek for Firefox and explains why on the target. Verified against Firefox 154 (snap), GNOME 50, Wayland. Seek in the page instead.
+5. **Window IDs** — GNOME extension stable window IDs work only on GNOME (no KDE/XFCE support)
+6. **Android app** — v3 is CLI + web UI; native Android would need separate codebase
 
 ## Testing Checklist
 
-- [x] 94 unit tests passing
+- [x] 97 unit tests passing
 - [x] YouTube search via module backend (venv)
 - [x] YouTube search via CLI backend (system Python with yt-dlp on PATH)
 - [x] YouTube search error messages (missing yt-dlp, network timeout, etc.)
@@ -116,7 +123,7 @@ pip install qrcode[pil]
 
 **Current:** Released as `v3.0.0` on 2026-08-23 — design frozen  
 **Blockers:** None — all known issues are documented limitations or by-design trade-offs  
-**Test status:** 94 tests, all passing  
+**Test status:** 97 tests, all passing  
 **CI/CD:** GitHub Actions, Python 3.11–3.13, with and without optional deps
 
 The v2 tree (`client/`, `server/`, its OpenSpec specs, and the v2 root test

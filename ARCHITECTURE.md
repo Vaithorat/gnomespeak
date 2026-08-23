@@ -9,7 +9,7 @@ a fixed set of concrete actions.
 
 ```
 ┌──────────────────────┐          ┌──────────────────────────────────────────┐
-│   Phone browser      │          │   Linux PC — python3 -m vt serve         │
+│   Phone browser      │          │   Linux PC — make dev                    │
 │                      │          │                                          │
 │  index.html          │  HTTP    │  ┌────────────────────────────────────┐  │
 │  • polls /api/state  ├──────────┤  │ server.py (aiohttp)                │  │

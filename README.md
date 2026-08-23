@@ -6,7 +6,7 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 
 - **Real-time state display** — See MPRIS players, open windows, running apps, and system audio.
 - **Launch installed apps** — Search everything with a `.desktop` entry and start it from the phone, whether or not it is already running.
-- **YouTube search & play** — Search YouTube videos, see results with title, channel and duration, and tap to play in your browser.
+- **YouTube search & play** — Search YouTube videos, see results with title, channel and duration, and tap to play in your browser. The video **starts on its own** and shows up under Players — vt checks the browser's autoplay policy and can fix it from the phone if it would block playback.
 - **YouTube playback control** — When a YouTube video plays in your browser, control it from the phone: play/pause, seek, volume, fullscreen, close (requires `xdotool` and `wmctrl`).
 - **Capability-aware controls** — The phone shows only the actions each player/window/app actually supports (play/pause, next/prev, seek, focus, close, mute, volume).
 - **Pre-configured commands** — Define shell commands in TOML once, invoke them from the phone by name. No arbitrary text input.
@@ -19,7 +19,7 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 ### Prerequisites
 
 - **Linux PC** (Ubuntu 22.04+, Fedora 37+, or similar with systemd + PipeWire/ALSA + GNOME Shell 45+)
-- **Python 3.11+** (check: `python3 --version`)
+- **Python 3.11+** (check: `python3 --version`) and **make** (`sudo apt install make`)
 - **Phone** with a modern browser (same WiFi network or routed access)
 
 ### Setup
@@ -33,27 +33,47 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 2. **Install system dependencies** (one-time)
    ```bash
    # Debian/Ubuntu
-   sudo apt-get install python3-aiohttp python3-psutil python3-dbus
+   sudo apt-get install python3-dbus python3-gi
 
    # Fedora
-   sudo dnf install python3-aiohttp python3-psutil python3-dbus
+   sudo dnf install python3-dbus python3-gi
    ```
 
-3. **Verify preflight checks**
+   These two cannot be pip-installed without libdbus/glib headers, so they come
+   from the distro. Everything else is handled by `make setup`.
+
+3. **Build the environment**
    ```bash
-   python3 -m vt doctor
+   make setup
+   ```
+
+   Creates `venv/` (with `--system-site-packages`, so the D-Bus bindings above
+   are visible) and installs VoiceTalk plus its QR, YouTube, and dev extras.
+
+4. **Verify preflight checks**
+   ```bash
+   make doctor
    ```
 
    All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run VoiceTalk.
 
-4. (Optional) **Install the window control extension**
+5. (Optional) **Put `vt` on your PATH**
    ```bash
-   python3 -m vt install-extension
+   make link
+   ```
+
+   Symlinks `venv/bin/vt` into `~/.local/bin`, so `vt serve` works from any
+   directory and any terminal without activating anything. Undo with `make unlink`.
+
+6. (Optional) **Install the window control extension**
+   ```bash
+   make doctor      # confirm the extension line first
+   vt install-extension
    ```
 
    This enables the `Focus` and `Close` buttons for open windows. On Wayland, you **must log out and log back in** for the extension to activate.
 
-5. (Optional) **Configure custom commands**
+7. (Optional) **Configure custom commands**
    ```bash
    mkdir -p ~/.config/voicetalk
    cp commands.toml.example ~/.config/voicetalk/commands.toml
@@ -66,8 +86,13 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 
 1. **Start the server**
    ```bash
-   python3 -m vt serve
+   make dev
    ```
+
+   `make dev` is the only start command you need. It sets the environment up if
+   it isn't already, then runs the server through `venv/bin/vt` by absolute
+   path — so it behaves identically from a VS Code terminal, a plain shell, or
+   any other directory. Override with `make dev PORT=9000 HOST=0.0.0.0`.
 
    Output:
    ```
@@ -95,6 +120,7 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 | `vt commands` | List configured commands. |
 | `vt apps [query]` | List installed apps you can launch, optionally filtered (`vt apps browser`). Launch one with `vt do launcher:<id> launch`. |
 | YouTube Search | Find and play YouTube videos from the phone UI (with `yt-dlp` installed) |
+| `vt allow-autoplay [--status] [--revert] [--restart]` | Let the browser start videos opened from the phone. Writes `media.autoplay.default` into the Firefox profile's `user.js` — the same setting as Settings → Privacy & Security → Autoplay → Allow Audio and Video. Takes effect on the next Firefox start; `--restart` does that for you. |
 | `vt doctor` | Run preflight checks. |
 | `vt install-extension` | Install the GNOME Shell window control extension. |
 
@@ -152,6 +178,7 @@ confirm = true              # Require double-tap
   - **Windows** (`sources/windows.py`) — Open windows via GNOME Shell extension (optional)
   - **Apps** (`sources/apps.py`) — Running apps matched against `.desktop` files, and every installed `.desktop` entry as a launchable target
   - **Audio** (`sources/audio.py`) — System volume via `wpctl`
+  - **YouTube** (`sources/youtube.py`) — Search via `yt-dlp`, and opening a video in the browser. Before it opens one it asks `sources/browser_autoplay.py` whether the browser will actually start playing, so a tap that cannot succeed says why instead of reporting success.
   - **Commands** (`commands.py`) — User-defined shell commands from TOML
 - **Actions** — Derived from player capabilities (CanPlay, CanPause, CanSeek, etc.) so unsupported actions don't appear.
 - **State refresh** — 1 Hz background task. The web UI polls instantly; the server caches.
@@ -161,6 +188,7 @@ confirm = true              # Require double-tap
 - **Wayland** — Keystroke injection is not possible; the old F11 fullscreen / arrow seek are gone.
 - **MPRIS only** — Only players that register on D-Bus appear (Firefox, Chrome, VLC, mpv, Spotify). HTML5 `<video>` without a media session will not.
 - **Window extension** — Requires GNOME Shell 45+, needs a logout/login to activate, and may need a `metadata.json` update for GNOME 51+. On X11 or KDE, the feature doesn't work.
+- **Autoplay is a browser setting** — vt can read and set it for Firefox (`vt allow-autoplay`), but it only takes effect on the next Firefox start, and for Chromium-family browsers there is no equivalent switch from outside the process.
 - **Plain HTTP** — The token stops casual access on a trusted network; it is not TLS. Do not expose to the internet.
 
 ## Troubleshooting
@@ -186,6 +214,23 @@ confirm = true              # Require double-tap
   refuses every property read and its player vanishes from the phone.
 - Fix: run `vt serve` from an ordinary terminal (GNOME Terminal). `vt doctor`
   reports the confinement under `Confinement` and `MPRIS`.
+
+**A video opens on the PC but sits there paused:**
+- The browser is blocking autoplay. Firefox blocks audible autoplay by default,
+  so the tab loads, nothing plays, no MPRIS player is published, and the video
+  never reaches the **Players** list — from the phone it looks like the tap did
+  nothing at all.
+- Fix from the phone: open **YouTube Search**; the banner at the top offers
+  **Allow autoplay**, which sets the pref and restarts Firefox (tabs are
+  restored) so the video you just picked starts playing.
+- Fix from the PC: `vt allow-autoplay`, then restart Firefox — or set
+  Settings → Privacy & Security → Autoplay to **Allow Audio and Video** yourself.
+- `vt doctor` reports this under `Autoplay`, and `vt allow-autoplay --status`
+  shows which profile it read.
+- Undo with `vt allow-autoplay --revert`. Note that Firefox copies the setting
+  into its own `prefs.js` once it has started with it, so a revert removes vt's
+  override but the value can persist — the command says so when that happens,
+  and the Settings UI is then the way back.
 
 **YouTube playback controls don't appear:**
 - Make sure `xdotool` and `wmctrl` are installed: `apt install xdotool wmctrl`
@@ -217,12 +262,17 @@ voicetalk/
 │   │   ├── mpris.py            # MPRIS players
 │   │   ├── windows.py          # GNOME extension
 │   │   ├── apps.py             # Running and installed apps
-│   │   └── audio.py            # PipeWire volume
+│   │   ├── audio.py            # PipeWire volume
+│   │   ├── youtube.py          # Search, and opening a video so it plays
+│   │   ├── youtube_player.py   # X11-only keystroke fallback
+│   │   └── browser_autoplay.py # Whether the browser will actually start it
 │   ├── ui/
 │   │   └── index.html          # Single-file web UI
 ├── gnome-extension/voicetalk@local/
 │   ├── metadata.json
 │   ├── extension.js            # D-Bus window interface
+├── Makefile                    # make dev / setup / test / doctor
+├── scripts/envreport.py        # backs `make env`
 ├── pyproject.toml
 ├── commands.toml.example
 ├── README.md
@@ -231,12 +281,40 @@ voicetalk/
 
 ## Development
 
-To contribute:
+Everything goes through `make`. Each target sets the environment up first if it
+needs to, so there is no activate step and no ordering to remember.
 
-1. Install dev deps: `pip install -e '.[dev]'`
-2. Run tests: `pytest -xvs tests/`
-3. Run the server: `python3 -m vt serve`
-4. Test the CLI: `python3 -m vt status`
+| Target | What it does |
+|--------|--------------|
+| `make dev` | Set up if needed, then start the server. **Start here.** |
+| `make setup` | Create `venv/` and install deps. Idempotent; re-runs only when `pyproject.toml` changes. |
+| `make test` | Run the pytest suite (`make test ARGS="-x -k mpris"`). |
+| `make doctor` | Preflight checks — D-Bus, PipeWire, port, extension, config. |
+| `make status` / `make commands` / `make apps` | CLI passthroughs. |
+| `make env` | Print the resolved interpreter and which optional deps it can see. |
+| `make link` / `make unlink` | Add/remove `~/.local/bin/vt`. |
+| `make deps` | Force a dependency reinstall. |
+| `make clean` | Drop caches and build artifacts (keeps the venv). |
+| `make reset` | Delete the venv and rebuild from scratch (~10s). |
+
+Options apply to `make dev`: `HOST=0.0.0.0`, `PORT=9000`, `NO_TOKEN=1`, `OPEN=1`,
+and `ARGS="..."` for anything else.
+
+### Why make, and not `python3 -m vt serve`
+
+`python3 -m vt serve` resolves to a different interpreter depending on where you
+run it. A VS Code terminal auto-activates `venv/` and gets `yt-dlp`; a plain
+shell gets the system Python and doesn't, so YouTube search quietly stops
+working — and from any directory other than the repo root the import fails
+outright. The Makefile removes the ambiguity:
+
+- every path is derived from the Makefile's own location, never from `$PWD`
+- every command runs `venv/bin/python` or `venv/bin/vt` by absolute path
+- `VIRTUAL_ENV`, `PYTHONPATH`, and `PYTHONHOME` from the calling shell are
+  dropped, so an unrelated activated venv cannot change the result
+
+If two terminals still disagree, run `make env` in both and compare the
+`interpreter` line.
 
 ## License
 

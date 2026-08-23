@@ -439,11 +439,14 @@ def launch_entry(entry: dict) -> dict:
 
 
 def execute_youtube_action(target_spec: str, action_id: str) -> dict:
-    """Handle YouTube actions: play video or control playback."""
+    """Handle YouTube actions: play video, fix autoplay, or control playback."""
     if action_id == "play":
         # target_spec is the video URL
         from vt.sources.youtube import play_video
         return play_video(target_spec)
+    elif action_id == "fix_autoplay":
+        from vt.sources.youtube import fix_autoplay
+        return fix_autoplay()
     elif target_spec == "player":
         return execute_youtube_player_action(action_id)
     return {"ok": False, "message": f"Unknown YouTube action: {action_id}"}

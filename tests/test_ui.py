@@ -98,3 +98,44 @@ def test_installed_app_names_are_escaped(rendered_apps):
 def test_installed_rows_launch_through_a_data_attribute(rendered_apps):
     assert 'data-action="launch"' in rendered_apps
     assert "onclick=" not in rendered_apps
+
+
+# --- the autoplay banner ----------------------------------------------------
+
+@pytest.fixture(scope="module")
+def rendered_youtube() -> str:
+    return _render("youtube")
+
+
+def test_autoplay_banner_renders_note_and_fix(rendered_youtube):
+    """The warning is useless if the action that fixes it is not next to it."""
+    assert 'class="banner"' in rendered_youtube
+    assert 'data-action="fix_autoplay"' in rendered_youtube
+    assert 'data-confirm="1"' in rendered_youtube
+
+
+def test_autoplay_banner_escapes_its_text(rendered_youtube):
+    from html.parser import HTMLParser
+
+    tags = []
+
+    class Collector(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tags.append(tag)
+
+    Collector().feed(rendered_youtube.split("SIGNATURE:")[0])
+    assert "img" not in tags
+    assert "&lt;img src=x onerror=alert(1)&gt;" in rendered_youtube
+
+
+def test_youtube_signature_tracks_the_note(rendered_youtube):
+    """The view is pinned against state polls so typing survives; the banner is
+    the one field that must still get through, or it would never clear itself."""
+    signature = rendered_youtube.split("SIGNATURE:")[1].strip()
+    assert signature.startswith("youtube|youtube:search|")
+    assert "Firefox blocks autoplay" in signature
+
+
+def test_search_box_survives_the_banner(rendered_youtube):
+    assert 'id="youtubeSearch"' in rendered_youtube
+    assert 'id="youtubeList"' in rendered_youtube

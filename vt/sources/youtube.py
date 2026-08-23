@@ -26,6 +26,11 @@ except ImportError:
 # Searches hit the network; yt-dlp itself is not slow, YouTube sometimes is.
 SEARCH_TIMEOUT = 20
 
+# The last video the phone asked for. `fix_autoplay` reopens it after the
+# restart, so the tap that failed because autoplay was blocked completes
+# itself rather than making the user search for the video a second time.
+_last_video_url = ""
+
 
 def cli_path() -> str:
     """Path to the yt-dlp command, or "" when it is not on PATH."""
@@ -157,20 +162,51 @@ def search_youtube(query: str, limit: int = 10) -> list[dict]:
 
 
 def get_youtube_target() -> Target:
-    """Return YouTube as a Target with a search action."""
+    """Return YouTube as a Target with a search action.
+
+    When the browser is set to block autoplay, the target says so and offers to
+    fix it. Without that the failure is invisible from the phone: the tap works,
+    the tab opens, and nothing plays.
+    """
+    from vt.sources.browser_autoplay import state as autoplay_state
+
     available = bool(backend())
+    if not available:
+        return Target(
+            id="youtube:search",
+            kind="youtube",
+            title="YouTube",
+            icon="▶",
+            status="yt-dlp not installed",
+            note=unavailable_message(),
+        )
+
+    autoplay = autoplay_state()
+    actions = [Action(id="search", label="Search")]
+    note = ""
+    status = "ready"
+    if autoplay["status"] == "blocked":
+        status = "autoplay blocked"
+        note = autoplay["reason"] + " Tap 'Allow autoplay' to fix it from here."
+        actions.append(
+            Action(id="fix_autoplay", label="Allow autoplay (restarts Firefox)", kind="confirm")
+        )
+    elif autoplay["status"] == "unknown" and autoplay["reason"]:
+        note = autoplay["reason"]
+
     return Target(
         id="youtube:search",
         kind="youtube",
         title="YouTube",
         icon="▶",
-        status="ready" if available else "yt-dlp not installed",
-        actions=[Action(id="search", label="Search")] if available else [],
+        status=status,
+        note=note,
+        actions=actions,
     )
 
 
-def play_video(video_url: str) -> dict:
-    """Open a YouTube video in the default browser."""
+def _open_url(video_url: str) -> dict:
+    """Hand a URL to the desktop's default browser."""
     try:
         subprocess.run(
             ["xdg-open", video_url],
@@ -179,10 +215,73 @@ def play_video(video_url: str) -> dict:
             stderr=subprocess.DEVNULL,
             timeout=5,
         )
-        return {"ok": True, "message": "Playing video"}
+        return {"ok": True, "message": ""}
     except FileNotFoundError:
         return {"ok": False, "message": "xdg-open not found"}
     except subprocess.TimeoutExpired:
         return {"ok": False, "message": "Timeout opening browser"}
     except Exception as e:
         return {"ok": False, "message": f"Error: {e}"}
+
+
+def play_video(video_url: str) -> dict:
+    """Open a YouTube video in the default browser and report whether it plays.
+
+    Opening is not playing. Firefox blocks autoplay of audible media by default,
+    so the tab loads paused, publishes no MPRIS player, and never appears under
+    Players -- the old "Playing video" reply claimed a success that had not
+    happened, and left walking to the PC as the only way to find out. The
+    autoplay policy is knowable up front, so check it and say which of the two
+    actually occurred.
+    """
+    global _last_video_url
+    from vt.sources.browser_autoplay import state as autoplay_state
+
+    autoplay = autoplay_state()
+    opened = _open_url(video_url)
+    if not opened["ok"]:
+        return opened
+    _last_video_url = video_url
+
+    if autoplay["status"] == "blocked":
+        return {
+            "ok": False,
+            "message": (
+                "Opened in the browser, but it is set to block autoplay so the "
+                "video will not start. " + autoplay["fix"] +
+                " Or use 'Allow autoplay' on the YouTube screen."
+            ),
+        }
+
+    if autoplay["status"] == "unknown":
+        return {"ok": True, "message": "Opened in the browser."}
+
+    return {"ok": True, "message": "Playing — appears under Players in a few seconds."}
+
+
+def last_video_url() -> str:
+    """The most recent video the phone opened, or "" if there has not been one."""
+    return _last_video_url
+
+
+def fix_autoplay(reopen_url: str | None = None) -> dict:
+    """Allow autoplay, then restart Firefox so the change takes effect.
+
+    Both halves are needed and neither is enough alone: the pref is only read at
+    startup, so writing it without a restart changes nothing the user can see.
+    """
+    from vt.sources.browser_autoplay import restart_firefox, set_autoplay
+
+    if reopen_url is None:
+        reopen_url = _last_video_url
+    written = set_autoplay(allow=True)
+    if not written["ok"]:
+        return written
+
+    if not written["needs_restart"]:
+        return {"ok": True, "message": "Autoplay allowed. Videos will start on their own from now on."}
+
+    restarted = restart_firefox(reopen_url)
+    if not restarted["ok"]:
+        return {"ok": False, "message": "Autoplay allowed, but " + restarted["message"]}
+    return {"ok": True, "message": "Autoplay allowed and " + restarted["message"].lower()}

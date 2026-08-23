@@ -295,6 +295,23 @@
             font-size: 12px;
         }
 
+        /* A blocked-autoplay warning is not an error -- the tap worked, the
+           browser just will not start the video. It needs its own weight:
+           visible above the results, but not styled like a failure. */
+        .banner {
+            padding: 12px 16px;
+            background-color: rgba(37, 99, 235, 0.08);
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            line-height: 1.45;
+            color: var(--text-muted);
+        }
+
+        .banner-text {
+            display: block;
+            margin-bottom: 10px;
+        }
+
         .error.hidden {
             display: none;
         }
@@ -619,7 +636,10 @@
             // not the snapshot, so a state poll must not re-render them --
             // rebuilding would wipe the search box or lose focus.
             if (isInstalledView()) return "installed|" + nav;
-            if (isYoutubeView()) return "youtube|" + nav;
+            // The YouTube view is otherwise pinned against state polls, but the
+            // autoplay banner has to clear itself once the fix lands, so let
+            // that one field through.
+            if (isYoutubeView()) return "youtube|" + nav + "|" + youtubeNotice();
             return (state ? JSON.stringify(state) : "") + "|" + nav;
         }
 
@@ -804,6 +824,12 @@
                 html += `<div class="list-item"><span class="list-item-label">Status: <span style="color:var(--accent)">${escapeHtml(target.status)}</span></span></div>`;
             }
 
+            // Why a control the player claims to support is not offered. Without
+            // this the absence just looks like a missing feature in vt.
+            if (target.note) {
+                html += `<div class="list-item"><span class="list-item-value" style="white-space:normal;line-height:1.4">${escapeHtml(target.note)}</span></div>`;
+            }
+
             if (target.position !== null && target.length !== null && target.length > 0) {
                 const pct = Math.round((target.position / target.length) * 100);
                 html += `<div class="list-item"><span class="list-item-label">Progress: ${pct}%</span></div>`;
@@ -879,10 +905,22 @@
             }, 120);
         }
 
+        function actionLabel(targetId, actionId) {
+            if (!state || !state.targets) return "";
+            const target = state.targets.find(t => t.id === targetId);
+            if (!target) return "";
+            const action = (target.actions || []).find(a => a && a.id === actionId);
+            return action ? action.label : "";
+        }
+
         function handleAction(targetId, actionId, isConfirm) {
             if (isConfirm) {
                 currentConfirm = {targetId, actionId};
-                document.getElementById("confirmText").textContent = `Confirm this action?`;
+                // "Confirm this action?" gave no way to tell Close from a
+                // browser restart -- name the action being confirmed.
+                const label = actionLabel(targetId, actionId);
+                document.getElementById("confirmText").textContent =
+                    label ? `${label}?` : "Confirm this action?";
                 document.getElementById("confirmOverlay").classList.remove("hidden");
             } else if (actionId === "launch") {
                 // Silent: a launch changes nothing this view shows, and a
@@ -896,7 +934,10 @@
 
         function doConfirm() {
             if (currentConfirm) {
-                doAction(currentConfirm.targetId, currentConfirm.actionId);
+                // Confirmed actions are the consequential ones -- a close, a
+                // quit, a browser restart. Showing what came back is how the
+                // user knows it happened without checking the PC.
+                doAction(currentConfirm.targetId, currentConfirm.actionId, undefined, {notice: true});
                 cancelConfirm();
             }
         }
@@ -952,8 +993,40 @@
             });
         }
 
+        function youtubeTarget() {
+            if (!state || !state.targets) return null;
+            return state.targets.find(t => t.id === "youtube:search") || null;
+        }
+
+        function youtubeNotice() {
+            const target = youtubeTarget();
+            return target && target.note ? target.note : "";
+        }
+
         function renderYoutube(el) {
-            let html = '<div class="search-bar">';
+            let html = "";
+
+            // Anything vt knows will stop the video from playing belongs here,
+            // above the search box: finding out after tapping a result means
+            // walking to the PC, which is the problem this screen exists to
+            // avoid.
+            const target = youtubeTarget();
+            const notice = youtubeNotice();
+            if (notice) {
+                html += '<div class="banner">';
+                html += `<span class="banner-text">${escapeHtml(notice)}</span>`;
+                const fix = (target.actions || []).find(a => a && a.id === "fix_autoplay");
+                if (fix) {
+                    html += `<div class="list-item action danger"
+                        data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(fix.id)}"
+                        data-confirm="1">`;
+                    html += `<span class="list-item-label">${escapeHtml(fix.label)}</span>`;
+                    html += `</div>`;
+                }
+                html += '</div>';
+            }
+
+            html += '<div class="search-bar">';
             html += `<input type="search" id="youtubeSearch" placeholder="Search YouTube"
                 autocomplete="off" autocapitalize="off" spellcheck="false"
                 value="${escapeAttr(youtubeQuery)}">`;

@@ -166,6 +166,42 @@ def test_an_ordinary_missing_property_is_not_reported_as_a_denial():
     assert mpris.access_denied_hint() is None
 
 
+# --- MPRIS seek quirk -------------------------------------------------------
+
+def test_firefox_seek_is_withheld_because_it_breaks_the_player():
+    """Firefox sets CanSeek=true and implements neither Seek nor SetPosition.
+
+    Either call returns without error, playback does not move, and the player
+    then reports Position=0 with no mpris:length for the rest of the track --
+    so the progress readout never comes back. Verified against Firefox 154
+    (snap) on GNOME 50/Wayland. Trusting CanSeek there hands the user a button
+    that silently breaks the display beside it.
+    """
+    from vt.sources import mpris
+
+    assert not mpris._seek_is_trustworthy(
+        "org.mpris.MediaPlayer2.firefox.instance_1_9397", "Firefox"
+    )
+    # Forks ship the same media backend.
+    assert not mpris._seek_is_trustworthy("org.mpris.MediaPlayer2.librewolf", "LibreWolf")
+
+
+def test_a_normal_player_keeps_its_seek_controls():
+    """The quirk is targeted: VLC and friends implement Seek correctly."""
+    from vt.sources import mpris
+
+    assert mpris._seek_is_trustworthy("org.mpris.MediaPlayer2.vlc", "VLC media player")
+    assert mpris._seek_is_trustworthy("org.mpris.MediaPlayer2.spotify", "Spotify")
+    assert mpris._seek_is_trustworthy("org.mpris.MediaPlayer2.mpv", "mpv")
+
+
+def test_the_withheld_seek_is_explained_rather_than_silently_absent():
+    """A missing control with no reason reads as a gap in vt, not in the player."""
+    from vt.sources import mpris
+
+    assert "does not implement it" in mpris.SEEK_UNAVAILABLE_REASON
+
+
 # --- YouTube search ---------------------------------------------------------
 
 def test_missing_yt_dlp_is_reported_not_silent(monkeypatch):

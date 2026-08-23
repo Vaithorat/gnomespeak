@@ -2,7 +2,7 @@
    from hostile metadata, so the escaping can be asserted from a test rather
    than by reading the source.
 
-   argv[3] picks the view: "category" (default) or "installed". */
+   argv[3] picks the view: "category" (default), "installed", or "youtube". */
 
 import fs from "node:fs";
 import vm from "node:vm";
@@ -52,7 +52,10 @@ sandbox.globalThis = sandbox;
 vm.createContext(sandbox);
 vm.runInContext(script + "\n;globalThis.__renderCategory = renderCategory;" +
   "globalThis.__renderAppList = renderAppList;" +
+  "globalThis.__renderYoutube = renderYoutube;" +
   "globalThis.__apps = (a) => { installedApps = a; };" +
+  "globalThis.__nav = (n) => { navStack = n; };" +
+  "globalThis.__signature = () => viewSignature();" +
   "globalThis.__state = (s) => { state = s; };", sandbox);
 
 const hostile = "<img src=x onerror=alert(1)>";
@@ -73,7 +76,7 @@ if (mode === "installed") {
   nodes.appList = el("appList");
   sandbox.__renderAppList();
   console.log(nodes.appList.innerHTML);
-} else {
+} else if (mode === "category") {
   sandbox.__state({
     targets: [
       {
@@ -90,4 +93,31 @@ if (mode === "installed") {
   const out = el("out");
   sandbox.__renderCategory(out, "window");
   console.log(out.innerHTML);
+}
+
+if (mode === "youtube") {
+  // The autoplay banner renders a server-supplied note next to a real action
+  // button, above a search field -- the one place in the UI where explanatory
+  // prose and a control share a container.
+  sandbox.__state({
+    targets: [
+      {
+        id: "youtube:search",
+        kind: "youtube",
+        title: "YouTube",
+        status: "autoplay blocked",
+        note: `Firefox blocks autoplay ${hostile}`,
+        actions: [
+          { id: "search", label: "Search", kind: "button" },
+          { id: "fix_autoplay", label: `Allow autoplay ${hostile}`, kind: "confirm" },
+        ],
+      },
+    ],
+  });
+  sandbox.__nav(["youtube:search"]);
+  const out = el("out");
+  sandbox.__renderYoutube(out);
+  // The signature must move with the note, or the banner would never clear.
+  console.log(out.innerHTML);
+  console.log("SIGNATURE:" + sandbox.__signature());
 }

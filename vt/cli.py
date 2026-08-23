@@ -28,6 +28,8 @@ def cmd_status(args):
         print(f"    kind={target.kind} status={status}{pos}")
         print(f"    id={target.id}")
         print(f"    actions: {actions_str}")
+        if target.note:
+            print(f"    note: {target.note}")
         print()
 
 
@@ -221,7 +223,29 @@ def cmd_doctor(args):
         checks.append(("ℹ", "Extension", "Not active (optional; run 'vt install-extension')"))
         warn_count += 1
 
-    # Check 6: Port availability
+    # Check 6: Browser autoplay. A tap on the phone that opens a paused tab
+    # looks identical to one that does nothing, so this is worth stating even
+    # though nothing is broken in vt itself.
+    try:
+        from vt.sources.browser_autoplay import state as autoplay_state
+
+        autoplay = autoplay_state(force=True)
+        if autoplay["status"] == "allowed":
+            checks.append(("✓", "Autoplay", "Browser starts videos opened from the phone"))
+            ok_count += 1
+        elif autoplay["status"] == "blocked":
+            checks.append(("⚠", "Autoplay", "Browser blocks autoplay"))
+            checks.append((" ", "", "videos opened from the phone load paused"))
+            checks.append((" ", "", "fix: vt allow-autoplay, then restart Firefox"))
+            warn_count += 1
+        else:
+            checks.append(("ℹ", "Autoplay", autoplay["reason"]))
+            warn_count += 1
+    except Exception as e:
+        checks.append(("ℹ", "Autoplay", f"Could not determine: {e}"))
+        warn_count += 1
+
+    # Check 7: Port availability
     try:
         sock = subprocess.run(
             ["ss", "-tln"],
@@ -293,6 +317,48 @@ def cmd_serve(args):
     token = "" if args.no_token else None
 
     run_server(host, port, token, open_browser=args.open)
+
+
+def cmd_allow_autoplay(args):
+    """Allow or re-block browser autoplay of videos opened from the phone."""
+    from vt.sources.browser_autoplay import restart_firefox, set_autoplay, state
+
+    if args.status:
+        current = state(force=True)
+        print(f"\n  Autoplay: {current['status']}")
+        print(f"  {current['reason']}")
+        if current["profile"]:
+            print(f"  Profile:  {current['profile']}")
+        if current["fix"]:
+            print(f"  Fix:      {current['fix']}")
+        print()
+        return
+
+    allow = not args.revert
+    result = set_autoplay(allow=allow)
+    if not result["ok"]:
+        print(f"✗ {result['message']}")
+        sys.exit(1)
+    print(f"✓ {result['message']}")
+
+    if allow:
+        print("  This is the same setting as Firefox's")
+        print("  Settings → Privacy & Security → Autoplay → Allow Audio and Video.")
+    elif result.get("residual"):
+        print(f"  Note: {result['residual']}")
+        return
+
+    if not result["needs_restart"]:
+        print("  Firefox is not running; the change applies the next time it starts.")
+        return
+
+    if args.restart:
+        outcome = restart_firefox()
+        print(("✓ " if outcome["ok"] else "✗ ") + outcome["message"])
+        if not outcome["ok"]:
+            sys.exit(1)
+    else:
+        print("  Restart Firefox for it to take effect (or re-run with --restart).")
 
 
 def cmd_install_extension(args):
@@ -380,6 +446,21 @@ def main():
     serve_parser.add_argument("--no-token", action="store_true", help="Disable token auth")
     serve_parser.add_argument("--open", action="store_true", help="Open in browser")
 
+    # allow-autoplay
+    autoplay_parser = subparsers.add_parser(
+        "allow-autoplay",
+        help="Let the browser start videos opened from the phone",
+    )
+    autoplay_parser.add_argument(
+        "--status", action="store_true", help="Report the current setting and exit"
+    )
+    autoplay_parser.add_argument(
+        "--revert", action="store_true", help="Remove vt's override again"
+    )
+    autoplay_parser.add_argument(
+        "--restart", action="store_true", help="Restart Firefox so it takes effect now"
+    )
+
     # install-extension
     subparsers.add_parser("install-extension", help="Install GNOME extension")
 
@@ -393,6 +474,7 @@ def main():
         "apps": cmd_apps,
         "doctor": cmd_doctor,
         "serve": cmd_serve,
+        "allow-autoplay": cmd_allow_autoplay,
         "install-extension": cmd_install_extension,
     }
 
