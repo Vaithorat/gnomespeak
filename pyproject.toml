@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "voicetalk"
-version = "3.0.0"
+version = "3.1.0"
 description = "Control your Linux PC from your phone: a CLI that reports what is running and serves a minimal web remote."
 readme = "README.md"
 requires-python = ">=3.11"
