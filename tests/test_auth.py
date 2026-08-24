@@ -226,6 +226,7 @@ async def test_a_paired_device_works_from_off_network(client):
 async def test_require_pairing_refuses_the_token_on_the_lan_too(tmp_path):
     server = make_server(tmp_path, require_pairing=True)
     async with TestClient(TestServer(server.make_app())) as c:
+        c.vt = server
         assert (await c.get("/api/state", headers={"X-VT-Token": "test-token"})).status == 401
         headers = await pair(c)
         assert (await c.get("/api/state", headers=headers)).status == 200

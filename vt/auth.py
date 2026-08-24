@@ -395,12 +395,25 @@ def is_private_ip(ip: str) -> bool:
     addr = _parse_ip(ip)
     if addr is None:
         return False
-    if addr.is_loopback or addr.is_private or addr.is_link_local:
+    if addr.is_loopback or addr.is_link_local:
         return True
-    # A dual-stack bind reports a LAN client as ::ffff:192.168.1.5, and the
-    # is_private above does not unwrap that on every Python version.
+    # A dual-stack bind reports a LAN client as ::ffff:192.168.1.5
+    # Check this before version-specific checks.
     mapped = getattr(addr, "ipv4_mapped", None)
-    return bool(mapped and (mapped.is_private or mapped.is_loopback or mapped.is_link_local))
+    if mapped:
+        return mapped in ipaddress.ip_network("10.0.0.0/8") or \
+               mapped in ipaddress.ip_network("172.16.0.0/12") or \
+               mapped in ipaddress.ip_network("192.168.0.0/16")
+    # Check specifically for RFC1918 ranges, not is_private which includes
+    # documentation/test ranges like TEST-NET-3.
+    if addr.version == 4:
+        return addr in ipaddress.ip_network("10.0.0.0/8") or \
+               addr in ipaddress.ip_network("172.16.0.0/12") or \
+               addr in ipaddress.ip_network("192.168.0.0/16")
+    # IPv6 private: fc00::/7 (unique local addresses)
+    if addr.version == 6:
+        return addr in ipaddress.ip_network("fc00::/7")
+    return False
 
 
 def resolve_client_ip(peer: str, headers, trust_proxy: bool):
