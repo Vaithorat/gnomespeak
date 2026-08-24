@@ -21,18 +21,12 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 ### Prerequisites
 
 - **Linux PC** (Ubuntu 22.04+, Fedora 37+, or similar with systemd + PipeWire/ALSA + GNOME Shell 45+)
-- **Python 3.11+** (check: `python3 --version`) and **make** (`sudo apt install make`)
+- **Python 3.11+** (check: `python3 --version`)
 - **Phone** with a modern browser (same WiFi network or routed access)
 
-### Setup
+### Quick Install (PyPI)
 
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/yourusername/voicetalk
-   cd voicetalk
-   ```
-
-2. **Install system dependencies** (one-time)
+1. **Install system dependencies** (one-time)
    ```bash
    # Debian/Ubuntu
    sudo apt-get install python3-dbus python3-gi
@@ -42,47 +36,71 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
    ```
 
    These two cannot be pip-installed without libdbus/glib headers, so they come
-   from the distro. Everything else is handled by `make setup`.
+   from the distro. Everything else is installed via pip.
 
-3. **Build the environment**
+2. **Install VoiceTalk** (one-time)
    ```bash
-   make setup
+   pip install voicetalk
    ```
 
-   Creates `venv/` (with `--system-site-packages`, so the D-Bus bindings above
-   are visible) and installs VoiceTalk plus its QR, YouTube, and dev extras.
+   This installs the `vt` command globally. You can now run `vt serve` from anywhere.
 
-4. **Verify preflight checks**
+3. **Verify preflight checks**
    ```bash
-   make doctor
+   vt doctor
    ```
 
    All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run VoiceTalk.
 
-5. (Optional) **Put `vt` on your PATH**
+4. (Optional) **Install the window control extension**
    ```bash
-   make link
-   ```
-
-   Symlinks `venv/bin/vt` into `~/.local/bin`, so `vt serve` works from any
-   directory and any terminal without activating anything. Undo with `make unlink`.
-
-6. (Optional) **Install the window control extension**
-   ```bash
-   make doctor      # confirm the extension line first
+   vt doctor      # confirm the extension line first
    vt install-extension
    ```
 
    This enables the `Focus` and `Close` buttons for open windows. On Wayland, you **must log out and log back in** for the extension to activate.
 
-7. (Optional) **Configure custom commands**
+5. (Optional) **Configure custom commands**
    ```bash
    mkdir -p ~/.config/voicetalk
-   cp commands.toml.example ~/.config/voicetalk/commands.toml
+   cp ~/.local/lib/python*/site-packages/vt/commands.toml.example ~/.config/voicetalk/commands.toml
    nano ~/.config/voicetalk/commands.toml
    ```
 
-   See `commands.toml.example` for syntax. Commands are validated on startup and invalid entries are skipped with a warning.
+   See the example file for syntax. Commands are validated on startup and invalid entries are skipped with a warning.
+
+### Development Setup (from source)
+
+For development or to work on the code:
+
+1. Clone and enter the repo
+   ```bash
+   git clone https://github.com/Vaithorat/voicetalk
+   cd voicetalk
+   ```
+
+2. Install system dependencies (same as above)
+   ```bash
+   sudo apt-get install python3-dbus python3-gi
+   ```
+
+3. Set up development environment
+   ```bash
+   make setup
+   ```
+
+   Creates a venv and installs the package in editable mode with dev/test extras.
+
+4. Run tests and linting
+   ```bash
+   make test
+   make lint
+   ```
+
+5. Start the development server
+   ```bash
+   make dev
+   ```
 
 ## Quick Start
 
