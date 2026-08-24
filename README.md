@@ -26,41 +26,35 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 
 ### Quick Install (PyPI)
 
-1. **Install system dependencies** (one-time)
-   ```bash
-   # Debian/Ubuntu
-   sudo apt-get install python3-dbus python3-gi
+**One command to install everything:**
 
-   # Fedora
-   sudo dnf install python3-dbus python3-gi
-   ```
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vaithorat/voicetalk/main/install.sh | bash
+```
 
-   These two cannot be pip-installed without libdbus/glib headers, so they come
-   from the distro. Everything else is installed via pip.
+This script:
+- Detects your Linux distro (Debian/Ubuntu or Fedora)
+- Installs system dependencies (`python3-dbus`, `python3-gi`)
+- Installs VoiceTalk from PyPI
+- Prints next steps
 
-2. **Install VoiceTalk** (one-time)
-   ```bash
-   pip install voicetalk
-   ```
+**After installation:**
 
-   This installs the `vt` command globally. You can now run `vt serve` from anywhere.
-
-3. **Verify preflight checks**
+1. **Verify preflight checks**
    ```bash
    vt doctor
    ```
 
    All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run VoiceTalk.
 
-4. (Optional) **Install the window control extension**
+2. (Optional) **Install the window control extension**
    ```bash
-   vt doctor      # confirm the extension line first
    vt install-extension
    ```
 
    This enables the `Focus` and `Close` buttons for open windows. On Wayland, you **must log out and log back in** for the extension to activate.
 
-5. (Optional) **Configure custom commands**
+3. (Optional) **Configure custom commands**
    ```bash
    mkdir -p ~/.config/voicetalk
    cp ~/.local/lib/python*/site-packages/vt/commands.toml.example ~/.config/voicetalk/commands.toml
