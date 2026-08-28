@@ -29,9 +29,9 @@ class CommandsConfig:
         """Locate commands.toml in config directories."""
         xdg_config = os.environ.get("XDG_CONFIG_HOME")
         if xdg_config:
-            config_dir = Path(xdg_config) / "voicetalk"
+            config_dir = Path(xdg_config) / "gnomespeak"
         else:
-            config_dir = Path.home() / ".config" / "voicetalk"
+            config_dir = Path.home() / ".config" / "gnomespeak"
 
         config_file = config_dir / "commands.toml"
         if config_file.exists():

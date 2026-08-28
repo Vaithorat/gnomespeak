@@ -14,6 +14,8 @@ import json
 import shutil
 import subprocess
 import sys
+from urllib.parse import parse_qs, urlparse
+
 from vt.model import Target, Action
 
 try:
@@ -149,6 +151,139 @@ def search(query: str, limit: int = 15) -> tuple[list[dict], str]:
     except Exception as e:
         detail = str(e).strip().splitlines()[-1] if str(e).strip() else e.__class__.__name__
         return [], f"Search failed: {detail}"
+
+
+# yt-dlp has never promised a related-videos field, and which key holds it --
+# when one is present at all -- has moved between extractor rewrites. Try the
+# names that have been used, then fall back to a search, so the feature
+# degrades to "more like this" instead of breaking outright.
+_RELATED_KEYS = ("related_videos", "related", "up_next")
+
+
+def video_id(url: str) -> str:
+    """The video id in a YouTube URL, or "" when there is not one."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return ""
+    if parsed.hostname and "youtu.be" in parsed.hostname:
+        return parsed.path.lstrip("/").split("/")[0]
+    return (parse_qs(parsed.query).get("v") or [""])[0]
+
+
+def current_video_url() -> str:
+    """The YouTube watch URL open in the browser right now, or "".
+
+    Read from Firefox's session store, the same file the tab list comes from --
+    the window manager only ever reports a title, never a URL.
+    """
+    try:
+        from vt.sources.firefox import get_firefox_windows
+        sessions = get_firefox_windows()
+    except Exception:
+        return ""
+
+    fallback = ""
+    for session in sessions:
+        tabs = session.get("tabs") or []
+        selected = session.get("selected", 0)
+        for i, tab in enumerate(tabs):
+            url = tab.get("url") or ""
+            if "youtube.com/watch" not in url and "youtu.be/" not in url:
+                continue
+            # The tab the user is looking at wins over one parked in the back.
+            if i == selected:
+                return url
+            fallback = fallback or url
+    return fallback
+
+
+def _normalise_related(entry) -> dict | None:
+    """Related entries are shaped like search entries, but not always keyed alike."""
+    if not isinstance(entry, dict):
+        return None
+    if not entry.get("id") and entry.get("video_id"):
+        entry = dict(entry, id=entry["video_id"])
+    if not entry.get("duration") and entry.get("length_seconds"):
+        entry = dict(entry, duration=entry["length_seconds"])
+    return _entry_to_video(entry)
+
+
+def _extract_info(url: str) -> dict:
+    """Full metadata for one video, through whichever yt-dlp is available."""
+    which = backend()
+    if which == "module":
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "socket_timeout": 10,
+        }
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False) or {}
+
+    result = subprocess.run(
+        [cli_path(), "-J", "--no-warnings", "--skip-download", url],
+        capture_output=True,
+        text=True,
+        timeout=SEARCH_TIMEOUT,
+    )
+    if result.returncode != 0 and not result.stdout.strip():
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(stderr.splitlines()[-1] if stderr else "yt-dlp failed")
+    return json.loads(result.stdout)
+
+
+def related_videos(url: str = "", limit: int = 15) -> tuple[list[dict], str]:
+    """Videos to watch next after `url`. Returns (videos, error).
+
+    With no URL, whatever is playing in the browser is used -- the point of the
+    feature is not having to know what that is.
+    """
+    if not backend():
+        return [], unavailable_message()
+
+    url = url.strip() or current_video_url()
+    if not url:
+        return [], (
+            "No YouTube video is open. Play one first, or search for something "
+            "instead."
+        )
+
+    try:
+        info = _extract_info(url)
+    except subprocess.TimeoutExpired:
+        return [], "yt-dlp timed out; the network or YouTube is slow right now."
+    except Exception as e:
+        detail = str(e).strip().splitlines()[-1] if str(e).strip() else e.__class__.__name__
+        return [], f"Could not read that video: {detail}"
+
+    current = info.get("id") or video_id(url)
+
+    videos = []
+    for key in _RELATED_KEYS:
+        for entry in info.get(key) or []:
+            video = _normalise_related(entry)
+            if video and video["id"] != current:
+                videos.append(video)
+            if len(videos) >= limit:
+                break
+        if videos:
+            break
+
+    if videos:
+        return videos[:limit], ""
+
+    # No related list in the metadata: search for the title instead. Not the
+    # same thing as YouTube's sidebar, but it answers the same question.
+    title = (info.get("title") or "").strip()
+    if not title:
+        return [], "That video carries no related list and no title to search on."
+
+    results, error = search(title, limit + 1)
+    if error:
+        return [], error
+    return [v for v in results if v["id"] != current][:limit], ""
 
 
 def search_youtube(query: str, limit: int = 10) -> list[dict]:

@@ -56,14 +56,14 @@ def config_dir() -> Path:
     """Directory holding devices.json, alongside commands.toml."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
     base = Path(xdg) if xdg else Path.home() / ".config"
-    return base / "voicetalk"
+    return base / "gnomespeak"
 
 
 def state_dir() -> Path:
     """Directory holding the audit log."""
     xdg = os.environ.get("XDG_STATE_HOME")
     base = Path(xdg) if xdg else Path.home() / ".local" / "state"
-    return base / "voicetalk"
+    return base / "gnomespeak"
 
 
 # --- credentials ------------------------------------------------------------

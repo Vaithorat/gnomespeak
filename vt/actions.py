@@ -10,6 +10,7 @@ a worker thread; the CLI calls them directly.
 """
 
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -159,8 +160,22 @@ def execute_action(target_id: str, action_id: str, value: Optional[float] = None
 
     kind, target_spec = target_id.split(":", 1)
 
-    if kind == "system" and target_spec == "audio":
-        return execute_audio_action(action_id, value)
+    if kind == "system":
+        if target_spec == "audio":
+            return execute_audio_action(action_id, value)
+        from vt.sources.system import execute as execute_system_action
+        return execute_system_action(target_spec, action_id, value)
+    elif kind == "bluetooth":
+        from vt.sources.bluetooth import execute as execute_bluetooth_action
+        return execute_bluetooth_action(target_spec, action_id)
+    elif kind == "workspace":
+        from vt.sources.workspaces import execute as execute_workspace_action
+        return execute_workspace_action(target_spec, action_id)
+    elif kind == "streaming":
+        from vt.sources.streaming import execute as execute_streaming_action
+        return execute_streaming_action(target_spec, action_id)
+    elif kind == "steam":
+        return execute_steam_action(target_spec, action_id)
     elif kind == "mpris":
         return execute_mpris_action(target_spec, action_id, value)
     elif kind == "command":
@@ -281,24 +296,140 @@ def execute_command_action(cmd_id: str) -> dict:
     return {"ok": False, "message": f"Command not found: {cmd_id}"}
 
 
+UNKNOWN_METHOD = "org.freedesktop.DBus.Error.UnknownMethod"
+
+# Window-frame actions that map one-to-one onto an extension method.
+_WINDOW_METHODS = {
+    "minimize": ("Minimize", "Window minimized"),
+    "unminimize": ("Unminimize", "Window restored"),
+    "maximize": ("Maximize", "Window maximized"),
+    "unmaximize": ("Unmaximize", "Window unmaximized"),
+}
+
+_MOVE_PREFIX = "move_ws_"
+
+
+def _stale_extension_message(method: str) -> str:
+    """An installed-but-older extension answers the bus and not the method.
+
+    Reporting that as a generic D-Bus error sent the last person to hit it
+    looking for a broken install rather than an out-of-date one.
+    """
+    return (
+        f"The installed GNOME extension has no {method} method. Run "
+        "`vt install-extension`, then reload the extension (log out and back "
+        "in under Wayland)."
+    )
+
+# Tab targets carry their key chord in the id fragment: "1234#tab=2&keys=alt+3".
+# Parsing it here keeps the action independent of the session store, which is
+# rewritten every 15s and may have shifted since the snapshot was served.
+_TAB_ID = re.compile(r"^(?P<wid>\d+)#tab=(?P<tab>\d+)&keys=(?P<keys>.+)$")
+
+
+def _send_keys(interface, wid, chord: str) -> dict:
+    """Type a chord into a window through the extension.
+
+    Only the compositor may synthesize input under Wayland, so this is the one
+    route that works there; xdotool is silently ignored by design.
+    """
+    try:
+        interface.SendKeys(wid, chord)
+        return {"ok": True, "message": ""}
+    except dbus.DBusException as e:
+        if dbus_error_name(e) == UNKNOWN_METHOD:
+            return {"ok": False, "message": _stale_extension_message("SendKeys")}
+        return {"ok": False, "message": shell_error(e)}
+
+
+# Alt+1..9 and Ctrl+Page_Down are not reserved by Firefox, so a web app is free
+# to claim them: on a Teams tab, Alt+2 moves Teams' own left rail and the browser
+# never sees a tab switch. Ctrl+L is reserved -- no page can swallow it -- so
+# parking focus in the address bar first takes the page out of the keyboard path,
+# and Escape hands focus back to the content once the right tab is selected.
+def _guarded(chord: str) -> str:
+    """Wrap a tab chord so the focused page cannot intercept it."""
+    return f"ctrl+l,{chord},escape"
+
+
+def _execute_tab_action(interface, wid, tab, action_id: str) -> dict:
+    """Act on one browser tab, addressed by the chord that selects it."""
+    chord = tab.group("keys")
+    number = int(tab.group("tab")) + 1
+
+    if action_id == "focus":
+        result = _send_keys(interface, wid, _guarded(chord))
+        if result["ok"]:
+            result["message"] = f"Switched to tab {number}"
+        return result
+    if action_id in ("close", "close_tab"):
+        # Select the tab first, then close it. One SendKeys call so the two
+        # cannot interleave with anything else the user is doing.
+        result = _send_keys(interface, wid, f"{_guarded(chord)},ctrl+w")
+        if result["ok"]:
+            result["message"] = f"Closed tab {number}"
+        return result
+    if action_id == "close_window":
+        interface.Close(wid)
+        return {"ok": True, "message": "Window closed"}
+    return {"ok": False, "message": f"Unknown tab action: {action_id}"}
+
+
 def execute_window_action(window_id: str, action_id: str) -> dict:
-    """Focus or close a window through the GNOME extension."""
+    """Focus or close a window, or a single browser tab, via the GNOME extension.
+
+    Browser tabs are not windows -- Mutter cannot see them at all -- so a tab
+    target names its parent window plus the keystrokes that select that tab
+    inside the browser. See vt/sources/firefox.py.
+    """
     if not HAS_DBUS:
         return {"ok": False, "message": no_dbus_message()}
 
+    tab = _TAB_ID.match(window_id)
+
     try:
-        wid = dbus.UInt32(int(window_id))
+        wid = dbus.UInt32(int(tab.group("wid") if tab else window_id))
     except (TypeError, ValueError):
         return {"ok": False, "message": f"Invalid window id: {window_id}"}
 
     try:
         interface = _shell_interface()
+
+        if tab:
+            return _execute_tab_action(interface, wid, tab, action_id)
+
         if action_id == "focus":
             interface.Focus(wid)
             return {"ok": True, "message": "Window focused"}
-        elif action_id == "close":
+        elif action_id in ("close", "close_window"):
             interface.Close(wid)
             return {"ok": True, "message": "Window closed"}
+        elif action_id == "close_tab":
+            result = _send_keys(interface, wid, "ctrl+w")
+            if result["ok"]:
+                result["message"] = "Tab closed"
+            return result
+        elif action_id in _WINDOW_METHODS:
+            method, message = _WINDOW_METHODS[action_id]
+            try:
+                getattr(interface, method)(wid)
+            except dbus.DBusException as e:
+                if dbus_error_name(e) == UNKNOWN_METHOD:
+                    return {"ok": False, "message": _stale_extension_message(method)}
+                raise
+            return {"ok": True, "message": message}
+        elif action_id.startswith(_MOVE_PREFIX):
+            try:
+                index = int(action_id[len(_MOVE_PREFIX):])
+            except ValueError:
+                return {"ok": False, "message": f"Invalid workspace action: {action_id}"}
+            try:
+                interface.MoveToWorkspace(wid, dbus.UInt32(index))
+            except dbus.DBusException as e:
+                if dbus_error_name(e) == UNKNOWN_METHOD:
+                    return {"ok": False, "message": _stale_extension_message("MoveToWorkspace")}
+                raise
+            return {"ok": True, "message": f"Moved to workspace {index + 1}"}
         return {"ok": False, "message": f"Unknown window action: {action_id}"}
     except dbus.DBusException as e:
         return {"ok": False, "message": shell_error(e)}
@@ -436,6 +567,15 @@ def launch_entry(entry: dict) -> dict:
         return {"ok": False, "message": f"Not found: {argv[0]}"}
     except Exception as e:
         return {"ok": False, "message": f"Error: {e}"}
+
+
+def execute_steam_action(appid: str, action_id: str) -> dict:
+    """Start an installed Steam game, addressed by its app id."""
+    if action_id != "launch":
+        return {"ok": False, "message": f"Unknown Steam action: {action_id}"}
+
+    from vt.sources.steam import launch_game
+    return launch_game(appid)
 
 
 def execute_youtube_action(target_spec: str, action_id: str) -> dict:

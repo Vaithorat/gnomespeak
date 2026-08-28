@@ -2,486 +2,864 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0e1013">
     <title>VoiceTalk</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
+            -webkit-tap-highlight-color: transparent;
         }
 
         :root {
-            --bg: #ffffff;
-            --fg: #000000;
-            --border: #e0e0e0;
-            --item-bg: #f9f9f9;
-            --item-hover: #f0f0f0;
+            --bg: #f4f5f7;
+            --surface: #ffffff;
+            --surface-2: #eceff3;
+            --border: #e1e5ea;
+            --fg: #14161a;
+            --muted: #6b7280;
             --accent: #2563eb;
-            --accent-hover: #1d4ed8;
-            --danger: #dc2626;
-            --text-muted: #666666;
+            --accent-soft: rgba(37, 99, 235, 0.10);
+            --danger: #d92d20;
+            --danger-soft: rgba(217, 45, 32, 0.10);
+            --ok: #16a34a;
+            --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.05);
+            --tabbar-h: 60px;
         }
 
         @media (prefers-color-scheme: dark) {
             :root {
-                --bg: #1a1a1a;
-                --fg: #e0e0e0;
-                --border: #333333;
-                --item-bg: #252525;
-                --item-hover: #333333;
-                --accent: #3b82f6;
-                --accent-hover: #2563eb;
-                --danger: #ef4444;
-                --text-muted: #999999;
+                --bg: #0e1013;
+                --surface: #171a1f;
+                --surface-2: #232830;
+                --border: #2a2f38;
+                --fg: #e8eaed;
+                --muted: #99a1ad;
+                --accent: #5b90ff;
+                --accent-soft: rgba(91, 144, 255, 0.16);
+                --danger: #f0574d;
+                --danger-soft: rgba(240, 87, 77, 0.16);
+                --ok: #34d399;
+                --shadow: none;
             }
         }
+
+        html, body { height: 100%; overscroll-behavior-y: none; }
 
         body {
             background-color: var(--bg);
             color: var(--fg);
-            font-family: monospace;
-            font-size: 14px;
-            line-height: 1.6;
-            padding: 0;
-            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                         "Helvetica Neue", Arial, sans-serif;
+            font-size: 15px;
+            line-height: 1.45;
+            -webkit-font-smoothing: antialiased;
         }
 
-        .container {
-            max-width: 600px;
+        button, input { font-family: inherit; color: inherit; }
+
+        /* ---- shell ---------------------------------------------------- */
+
+        .app {
+            max-width: 640px;
             margin: 0 auto;
-            height: 100vh;
+            height: 100%;
             display: flex;
             flex-direction: column;
             background-color: var(--bg);
         }
 
-        .header {
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            min-height: 44px;
-        }
-
-        .header-title {
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: var(--text-muted);
-            flex: 1;
-        }
-
-        .status-dot {
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background-color: #888;
-            margin-left: 8px;
-        }
-
-        .status-dot.connected {
-            background-color: #22c55e;
-        }
-
-        .status-dot.disconnected {
-            background-color: #ef4444;
-        }
-
-        .content {
-            flex: 1;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-        }
-
-        .breadcrumb {
-            padding: 8px 16px;
-            border-bottom: 1px solid var(--border);
-            font-size: 12px;
-            color: var(--accent);
-            min-height: 32px;
+        .topbar {
             display: flex;
             align-items: center;
-            gap: 8px;
-        }
-
-        .breadcrumb button {
-            background: none;
-            border: none;
-            color: var(--accent);
-            cursor: pointer;
-            padding: 4px 8px;
-            font-size: 12px;
-            font-family: monospace;
-            text-decoration: underline;
-        }
-
-        .breadcrumb button:hover {
-            color: var(--accent-hover);
-        }
-
-        .breadcrumb span {
-            color: var(--text-muted);
-        }
-
-        .breadcrumb.hidden {
-            display: none;
-        }
-
-        .list {
-            flex: 1;
-            overflow-y: auto;
-        }
-
-        .list-item {
-            padding: 12px 16px;
+            gap: 4px;
+            padding: 10px 12px;
+            padding-top: max(10px, env(safe-area-inset-top));
+            background-color: var(--bg);
             border-bottom: 1px solid var(--border);
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            user-select: none;
-            transition: background-color 0.1s;
-            min-height: 44px;
+            position: sticky;
+            top: 0;
+            z-index: 5;
         }
 
-        .list-item:hover {
-            background-color: var(--item-hover);
-        }
-
-        .list-item.action {
-            background-color: var(--item-bg);
-        }
-
-        .list-item.action:active {
-            opacity: 0.7;
-        }
-
-        .list-item.action.danger {
-            background-color: rgba(220, 38, 38, 0.1);
-        }
-
-        .list-item-label {
+        .topbar-title {
             flex: 1;
-            font-size: 13px;
-        }
-
-        .list-item-icon {
-            font-size: 16px;
-            margin-right: 12px;
-            min-width: 20px;
-        }
-
-        .list-item-value {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-left: auto;
-            margin-left: 12px;
-            text-align: right;
-            max-width: 100px;
+            font-size: 17px;
+            font-weight: 650;
+            letter-spacing: -0.2px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
-        .slider-container {
-            padding: 12px 16px;
-            border-bottom: 1px solid var(--border);
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .slider-label {
-            font-size: 12px;
-            color: var(--text-muted);
-        }
-
-        .slider-control {
+        .iconbtn {
+            width: 40px;
+            height: 40px;
+            border: none;
+            background: none;
+            border-radius: 12px;
+            font-size: 24px;
+            line-height: 1;
+            cursor: pointer;
             display: flex;
             align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+        }
+
+        .iconbtn:active { background-color: var(--surface-2); }
+        .iconbtn.hidden { display: none; }
+
+        .status-dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background-color: var(--muted);
+            flex: 0 0 auto;
+            margin-right: 6px;
+            transition: background-color 0.2s;
+        }
+
+        .status-dot.connected { background-color: var(--ok); }
+        .status-dot.disconnected { background-color: var(--danger); }
+
+        .scroll {
+            flex: 1;
+            overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
+            padding: 12px 12px calc(24px + env(safe-area-inset-bottom));
+        }
+
+        /* ---- bottom tab bar ------------------------------------------- */
+
+        .tabbar {
+            display: flex;
+            border-top: 1px solid var(--border);
+            background-color: var(--surface);
+            padding-bottom: env(safe-area-inset-bottom);
+            flex: 0 0 auto;
+        }
+
+        .tab {
+            flex: 1;
+            border: none;
+            background: none;
+            cursor: pointer;
+            padding: 7px 2px 9px;
+            min-height: var(--tabbar-h);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 2px;
+            color: var(--muted);
+        }
+
+        .tab-icon { font-size: 20px; line-height: 1.1; }
+        .tab-label { font-size: 11px; font-weight: 600; letter-spacing: 0.1px; }
+        .tab.active { color: var(--accent); }
+        .tab:active { background-color: var(--surface-2); }
+
+        .app.no-chrome .tabbar { display: none; }
+
+        /* ---- sections and cards --------------------------------------- */
+
+        .section { margin-bottom: 18px; }
+
+        .section-head {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            padding: 0 6px 8px;
+        }
+
+        .section-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.7px;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .section-head > .section-title { margin-right: auto; }
+
+        .section-note {
+            font-size: 12px;
+            color: var(--muted);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .section-link {
+            border: none;
+            background: none;
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            padding: 2px 4px;
+        }
+
+        .card {
+            background-color: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .card + .card { margin-top: 10px; }
+
+        /* ---- rows ------------------------------------------------------ */
+
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 14px;
+            min-height: 58px;
+            cursor: pointer;
+            user-select: none;
+            transition: background-color 0.12s;
+        }
+
+        .row + .row { border-top: 1px solid var(--border); }
+        .row:active { background-color: var(--surface-2); }
+        .row.static { cursor: default; }
+        .row.static:active { background-color: transparent; }
+        .row.danger .row-title { color: var(--danger); }
+
+        .row-icon {
+            width: 34px;
+            height: 34px;
+            flex: 0 0 auto;
+            border-radius: 10px;
+            background-color: var(--surface-2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 17px;
+            overflow: hidden;
+        }
+
+        .row.on .row-icon { background-color: var(--accent-soft); color: var(--accent); }
+
+        .row-body { flex: 1; min-width: 0; }
+
+        .row-title {
+            font-size: 15px;
+            font-weight: 550;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .row-sub {
+            font-size: 12.5px;
+            color: var(--muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .row-meta {
+            font-size: 12.5px;
+            color: var(--muted);
+            flex: 0 0 auto;
+            max-width: 40%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .row-chevron { color: var(--muted); font-size: 20px; flex: 0 0 auto; }
+
+        .row-more {
+            flex: 0 0 auto;
+            width: 40px;
+            height: 40px;
+            border: none;
+            border-radius: 12px;
+            background-color: var(--surface-2);
+            color: var(--muted);
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .row-more:active { background-color: var(--border); }
+
+        .badge {
+            flex: 0 0 auto;
+            min-width: 22px;
+            padding: 1px 7px;
+            border-radius: 999px;
+            background-color: var(--surface-2);
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 650;
+            text-align: center;
+        }
+
+        /* ---- tiles ----------------------------------------------------- */
+
+        .tiles {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
             gap: 8px;
         }
+
+        .tile {
+            background-color: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            box-shadow: var(--shadow);
+            min-height: 82px;
+            padding: 11px 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            cursor: pointer;
+            user-select: none;
+            transition: transform 0.1s, background-color 0.12s;
+        }
+
+        .tile:active { transform: scale(0.96); background-color: var(--surface-2); }
+
+        .tile-icon { font-size: 22px; line-height: 1; }
+
+        .tile-label {
+            font-size: 12px;
+            font-weight: 600;
+            text-align: center;
+            line-height: 1.25;
+            color: var(--fg);
+        }
+
+        .tile.on { background-color: var(--accent-soft); border-color: transparent; }
+        .tile.on .tile-icon, .tile.on .tile-label { color: var(--accent); }
+        .tile.danger .tile-icon, .tile.danger .tile-label { color: var(--danger); }
+
+        /* ---- player card ------------------------------------------------ */
+
+        .player { padding: 14px; }
+
+        .player-head { display: flex; align-items: center; gap: 12px; }
+
+        .player-art {
+            width: 44px;
+            height: 44px;
+            border-radius: 12px;
+            background-color: var(--accent-soft);
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            flex: 0 0 auto;
+        }
+
+        .player-title {
+            font-size: 15.5px;
+            font-weight: 650;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .player-sub {
+            font-size: 12.5px;
+            color: var(--muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .progress {
+            margin-top: 12px;
+            height: 4px;
+            border-radius: 999px;
+            background-color: var(--surface-2);
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            border-radius: 999px;
+            background-color: var(--accent);
+            transition: width 0.9s linear;
+        }
+
+        .progress-times {
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: var(--muted);
+            margin-top: 4px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .transport {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .tbtn {
+            flex: 1;
+            height: 48px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background-color: var(--surface-2);
+            font-size: 17px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.1s;
+        }
+
+        .tbtn:active { transform: scale(0.94); }
+
+        .tbtn.primary {
+            flex: 1.6;
+            background-color: var(--accent);
+            border-color: var(--accent);
+            color: #fff;
+            font-size: 20px;
+        }
+
+        .tbtn.wide { flex: 0 0 48px; }
+
+        /* ---- sliders ---------------------------------------------------- */
+
+        .slider-row { padding: 12px 14px; }
+
+        .slider-head {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            margin-bottom: 6px;
+        }
+
+        .slider-name { font-weight: 600; }
+        .slider-value { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+        .slider-control { display: flex; align-items: center; gap: 12px; }
 
         input[type="range"] {
             flex: 1;
-            height: 4px;
-            border-radius: 2px;
-            background: var(--border);
+            height: 28px;
+            background: transparent;
             outline: none;
             -webkit-appearance: none;
             appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-runnable-track {
+            height: 6px;
+            border-radius: 999px;
+            background: var(--surface-2);
         }
 
         input[type="range"]::-webkit-slider-thumb {
             -webkit-appearance: none;
             appearance: none;
-            width: 16px;
-            height: 16px;
+            width: 24px;
+            height: 24px;
+            margin-top: -9px;
             border-radius: 50%;
             background: var(--accent);
+            border: 3px solid var(--surface);
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
             cursor: pointer;
+        }
+
+        input[type="range"]::-moz-range-track {
+            height: 6px;
+            border-radius: 999px;
+            background: var(--surface-2);
         }
 
         input[type="range"]::-moz-range-thumb {
-            width: 16px;
-            height: 16px;
+            width: 22px;
+            height: 22px;
             border-radius: 50%;
             background: var(--accent);
+            border: 3px solid var(--surface);
             cursor: pointer;
-            border: none;
         }
 
-        .slider-value {
-            font-size: 11px;
-            min-width: 32px;
-            text-align: right;
-            color: var(--text-muted);
-        }
-
-        .search-bar {
-            padding: 8px 12px;
-            border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
-            background-color: var(--bg);
-            z-index: 2;
-        }
-
-        .search-bar input {
-            width: 100%;
-            padding: 10px 12px;
-            font-family: monospace;
-            font-size: 13px;
-            color: var(--fg);
-            background-color: var(--item-bg);
+        .step {
+            flex: 0 0 auto;
+            width: 40px;
+            height: 40px;
             border: 1px solid var(--border);
-            border-radius: 4px;
-            min-height: 44px;
+            border-radius: 12px;
+            background-color: var(--surface-2);
+            font-size: 17px;
+            cursor: pointer;
         }
 
-        .search-bar input:focus {
-            outline: none;
+        .step:active { background-color: var(--border); }
+
+        /* ---- search ------------------------------------------------------ */
+
+        .search {
+            position: relative;
+            margin-bottom: 14px;
+        }
+
+        .search input {
+            width: 100%;
+            height: 46px;
+            padding: 0 40px 0 38px;
+            font-size: 16px;
+            background-color: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            box-shadow: var(--shadow);
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .search input:focus { outline: none; border-color: var(--accent); }
+        .search input::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+        .search-icon {
+            position: absolute;
+            left: 13px;
+            top: 50%;
+            margin-top: -10px;
+            font-size: 15px;
+            color: var(--muted);
+            pointer-events: none;
+        }
+
+        .search-clear {
+            position: absolute;
+            right: 4px;
+            top: 3px;
+            width: 40px;
+            height: 40px;
+            border: none;
+            background: none;
+            color: var(--muted);
+            font-size: 18px;
+            cursor: pointer;
+            border-radius: 12px;
+        }
+
+        .search-clear.hidden { display: none; }
+
+        /* ---- chips ------------------------------------------------------- */
+
+        .chips {
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 10px;
+            scrollbar-width: none;
+        }
+
+        .chips::-webkit-scrollbar { display: none; }
+
+        .chip {
+            flex: 0 0 auto;
+            padding: 8px 14px;
+            min-height: 38px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background-color: var(--surface);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--muted);
+            cursor: pointer;
+        }
+
+        .chip.active {
+            background-color: var(--accent);
             border-color: var(--accent);
+            color: #fff;
         }
 
-        .notice {
-            padding: 12px 16px;
-            background-color: rgba(37, 99, 235, 0.12);
-            color: var(--accent);
-            border-bottom: 1px solid var(--border);
-            font-size: 12px;
-        }
-
-        .notice.hidden {
-            display: none;
-        }
+        /* ---- messages ---------------------------------------------------- */
 
         .empty {
-            padding: 40px 16px;
+            padding: 32px 16px;
             text-align: center;
-            color: var(--text-muted);
-            font-size: 12px;
+            color: var(--muted);
+            font-size: 13.5px;
         }
 
         .error {
-            padding: 12px 16px;
-            background-color: rgba(220, 38, 38, 0.1);
+            margin: 0 12px 12px;
+            padding: 11px 14px;
+            border-radius: 12px;
+            background-color: var(--danger-soft);
             color: var(--danger);
-            border-bottom: 1px solid var(--border);
-            font-size: 12px;
+            font-size: 13px;
         }
 
-        /* A blocked-autoplay warning is not an error -- the tap worked, the
-           browser just will not start the video. It needs its own weight:
-           visible above the results, but not styled like a failure. */
+        .error.hidden { display: none; }
+
         .banner {
-            padding: 12px 16px;
-            background-color: rgba(37, 99, 235, 0.08);
-            border-bottom: 1px solid var(--border);
-            font-size: 12px;
+            padding: 14px;
+            border-radius: 16px;
+            background-color: var(--accent-soft);
+            font-size: 13px;
             line-height: 1.45;
-            color: var(--text-muted);
+            margin-bottom: 14px;
         }
 
-        .banner-text {
-            display: block;
+        .banner-text { display: block; margin-bottom: 10px; }
+
+        .toast {
+            position: fixed;
+            left: 50%;
+            bottom: calc(var(--tabbar-h) + 16px + env(safe-area-inset-bottom));
+            transform: translateX(-50%);
+            max-width: min(90vw, 420px);
+            padding: 11px 18px;
+            border-radius: 999px;
+            background-color: #14161a;
+            color: #fff;
+            font-size: 13.5px;
+            font-weight: 550;
+            z-index: 1200;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+            text-align: center;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            .toast { background-color: #f1f3f6; color: #14161a; }
+        }
+
+        .toast.hidden { display: none; }
+
+        /* ---- sheet & confirm --------------------------------------------- */
+
+        .overlay {
+            position: fixed;
+            inset: 0;
+            background-color: rgba(0, 0, 0, 0.45);
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .overlay.hidden { display: none; }
+
+        .sheet {
+            background-color: var(--bg);
+            width: 100%;
+            max-width: 640px;
+            max-height: 86vh;
+            overflow-y: auto;
+            border-radius: 22px 22px 0 0;
+            padding: 8px 12px calc(20px + env(safe-area-inset-bottom));
+        }
+
+        .sheet-handle {
+            width: 40px;
+            height: 4px;
+            border-radius: 999px;
+            background-color: var(--border);
+            margin: 4px auto 12px;
+        }
+
+        .sheet-head { padding: 0 6px 12px; }
+
+        .sheet-title {
+            font-size: 17px;
+            font-weight: 700;
+            line-height: 1.3;
+        }
+
+        .sheet-sub { font-size: 13px; color: var(--muted); }
+
+        .sheet-note {
+            font-size: 12.5px;
+            color: var(--muted);
+            line-height: 1.45;
+            padding: 10px 14px;
+            background-color: var(--surface-2);
+            border-radius: 12px;
             margin-bottom: 10px;
         }
 
-        .error.hidden {
-            display: none;
+        .actions {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
         }
 
-        .confirm-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: flex-end;
-            z-index: 1000;
+        .abtn {
+            min-height: 54px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background-color: var(--surface);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: var(--shadow);
+            transition: transform 0.1s;
         }
+
+        .abtn:active { transform: scale(0.97); }
+        .abtn.danger { color: var(--danger); border-color: var(--danger-soft); background-color: var(--danger-soft); }
+        .abtn.full { grid-column: 1 / -1; }
 
         .confirm-dialog {
             background-color: var(--bg);
             width: 100%;
-            padding: 20px 16px;
-            border-top: 1px solid var(--border);
+            max-width: 640px;
+            border-radius: 22px 22px 0 0;
+            padding: 22px 16px calc(20px + env(safe-area-inset-bottom));
         }
 
-        .confirm-text {
-            margin-bottom: 16px;
+        .confirm-text { font-size: 17px; font-weight: 650; text-align: center; }
+
+        .confirm-sub {
             font-size: 13px;
+            color: var(--muted);
+            text-align: center;
+            margin-top: 4px;
+            line-height: 1.35;
         }
 
-        .confirm-buttons {
-            display: flex;
-            gap: 8px;
-        }
+        .confirm-sub.hidden { display: none; }
+
+        .confirm-buttons { display: flex; gap: 10px; }
+        .confirm-actions { margin-top: 18px; }
 
         .confirm-buttons button {
             flex: 1;
-            padding: 12px;
+            min-height: 52px;
             border: 1px solid var(--border);
-            border-radius: 4px;
-            font-family: monospace;
-            font-size: 12px;
+            border-radius: 14px;
+            font-size: 15px;
+            font-weight: 650;
             cursor: pointer;
-            min-height: 44px;
-        }
-
-        .confirm-buttons .cancel {
-            background-color: var(--item-bg);
-            color: var(--fg);
+            background-color: var(--surface);
         }
 
         .confirm-buttons .confirm {
             background-color: var(--danger);
-            color: white;
             border-color: var(--danger);
+            color: #fff;
         }
 
-        .confirm-overlay.hidden {
-            display: none;
-        }
+        /* ---- pairing ------------------------------------------------------ */
 
-        /* Utility classes rather than style="" attributes: the page ships a
-           nonce-only style-src, which blocks inline style attributes too. */
-        .push-right { margin-left: auto; }
-        .strong { font-weight: bold; }
-        .accent { color: var(--accent); }
-        .wrap { white-space: normal; line-height: 1.4; }
-        .pad { padding: 16px; }
-
-        .pair {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            padding: 20px 4px;
-        }
-
-        .pair-title {
-            font-size: 15px;
-            font-weight: bold;
-        }
-
-        .pair-help {
-            color: var(--fg);
-            opacity: 0.75;
-            line-height: 1.5;
-        }
+        .pair { display: flex; flex-direction: column; gap: 12px; padding: 24px 4px; }
+        .pair-title { font-size: 20px; font-weight: 700; }
+        .pair-help { color: var(--muted); line-height: 1.5; font-size: 14px; }
 
         .pair-help code {
-            background-color: var(--item-bg);
-            border: 1px solid var(--border);
-            border-radius: 3px;
-            padding: 1px 5px;
+            background-color: var(--surface-2);
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-size: 13px;
         }
 
         .pair-error {
-            background-color: var(--danger);
-            color: white;
-            border-radius: 4px;
-            padding: 10px 12px;
-            line-height: 1.4;
+            background-color: var(--danger-soft);
+            color: var(--danger);
+            border-radius: 12px;
+            padding: 11px 14px;
+            font-size: 13.5px;
         }
 
         .pair input {
             width: 100%;
-            padding: 12px;
+            height: 52px;
+            padding: 0 14px;
             border: 1px solid var(--border);
-            border-radius: 4px;
-            background-color: var(--item-bg);
-            color: var(--fg);
-            font-family: monospace;
-            font-size: 14px;
-            min-height: 44px;
+            border-radius: 14px;
+            background-color: var(--surface);
+            font-size: 16px;
         }
 
-        .pair #pairCode {
-            letter-spacing: 2px;
-            text-transform: uppercase;
-        }
+        .pair input:focus { outline: none; border-color: var(--accent); }
+        .pair #pairCode { letter-spacing: 3px; text-transform: uppercase; font-weight: 600; }
 
         .pair-submit {
-            padding: 12px;
-            border: 1px solid var(--accent);
-            border-radius: 4px;
+            min-height: 52px;
+            border: none;
+            border-radius: 14px;
             background-color: var(--accent);
-            color: white;
-            font-family: monospace;
-            font-size: 13px;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 650;
             cursor: pointer;
-            min-height: 44px;
         }
 
-        .pair-submit[disabled] {
-            opacity: 0.6;
-            cursor: default;
-        }
-
-        .device-current {
-            color: var(--accent);
-        }
+        .pair-submit[disabled] { opacity: 0.6; }
 
         .revoke {
-            padding: 6px 12px;
-            border: 1px solid var(--danger);
-            border-radius: 4px;
-            background-color: transparent;
+            flex: 0 0 auto;
+            padding: 8px 14px;
+            min-height: 38px;
+            border: 1px solid var(--danger-soft);
+            border-radius: 999px;
+            background-color: var(--danger-soft);
             color: var(--danger);
-            font-family: monospace;
-            font-size: 11px;
+            font-size: 12.5px;
+            font-weight: 650;
             cursor: pointer;
-            min-height: 32px;
         }
+
+        .device-current .row-title { color: var(--accent); }
+
+        /* Utility classes rather than style="" attributes: the page ships a
+           nonce-only style-src, which blocks inline style attributes too. */
+        .wrap { white-space: normal; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="header-title">VoiceTalk <span class="status-dot disconnected" id="status"></span></div>
-        </div>
+    <div class="app" id="app">
+        <header class="topbar">
+            <button class="iconbtn hidden" id="backBtn" aria-label="Back">&lsaquo;</button>
+            <div class="topbar-title" id="viewTitle">VoiceTalk</div>
+            <span class="status-dot disconnected" id="status"></span>
+        </header>
 
         <div id="error" class="error hidden"></div>
 
-        <div id="notice" class="notice hidden"></div>
+        <main class="scroll" id="content"></main>
 
-        <div class="breadcrumb hidden" id="breadcrumb"></div>
-
-        <div class="list" id="content"></div>
+        <nav class="tabbar" id="tabbar">
+            <button class="tab" data-tab="home"><span class="tab-icon">&#9750;</span><span class="tab-label">Home</span></button>
+            <button class="tab" data-tab="media"><span class="tab-icon">&#9654;</span><span class="tab-label">Media</span></button>
+            <button class="tab" data-tab="apps"><span class="tab-icon">&#9638;</span><span class="tab-label">Apps</span></button>
+            <button class="tab" data-tab="system"><span class="tab-icon">&#9881;</span><span class="tab-label">System</span></button>
+        </nav>
     </div>
 
-    <div class="confirm-overlay hidden" id="confirmOverlay">
+    <div id="notice" class="toast hidden"></div>
+
+    <div class="overlay hidden" id="sheetOverlay">
+        <div class="sheet" id="sheet">
+            <div class="sheet-handle"></div>
+            <div id="sheetBody"></div>
+        </div>
+    </div>
+
+    <div class="overlay hidden" id="confirmOverlay">
         <div class="confirm-dialog">
             <div class="confirm-text" id="confirmText"></div>
-            <div class="confirm-buttons">
+            <div class="confirm-sub hidden" id="confirmSub"></div>
+            <div class="confirm-buttons confirm-actions">
                 <button class="cancel" id="confirmCancel">Cancel</button>
                 <button class="confirm" id="confirmOk">Confirm</button>
             </div>
@@ -494,7 +872,10 @@
 
         let state = null;
         let navStack = [];
+        let tab = "home";
         let currentConfirm = null;
+        let sheetTarget = null;
+        let homeQuery = "";
 
         // Installed apps are fetched once from /api/apps rather than riding the
         // 1 Hz snapshot: hundreds of rows that change about once a week have no
@@ -504,6 +885,7 @@
         let installedQuery = "";
         let installedError = "";
         let appsFetching = false;
+        let appsFilter = "all";
 
         // Device pairing state
         let pairError = "";
@@ -522,6 +904,9 @@
         let youtubeError = "";
 
         // === Navigation ===
+        // A tab bar plus one level of drill-down. The tab is always reachable in
+        // one thumb tap, so nothing in the app is ever more than three taps from
+        // anything else.
         function nav(path) {
             navStack = path;
             render();
@@ -530,21 +915,36 @@
         function navPush(key) {
             navStack.push(key);
             renderHoldUntil = 0;
+            lastSignature = null;
             render();
         }
 
         function navPop() {
             navStack.pop();
+            lastSignature = null;
             render();
         }
 
         function navTop() {
             navStack = [];
+            lastSignature = null;
             render();
         }
 
         function navCategory(kind) {
             navStack = [`category:${kind}`];
+            lastSignature = null;
+            render();
+        }
+
+        function setTab(name) {
+            if (tab === name && navStack.length === 0) {
+                document.getElementById("content").scrollTop = 0;
+                return;
+            }
+            tab = name;
+            navStack = [];
+            lastSignature = null;
             render();
         }
 
@@ -782,6 +1182,7 @@
             if (!youtubeQuery.trim() || youtubeSearching) return;
             youtubeSearching = true;
             youtubeError = "";
+            renderYoutubeResults();
             try {
                 const resp = await fetch(`${API_BASE}/youtube?q=${encodeURIComponent(youtubeQuery)}`, {headers: getHeaders()});
                 if (!resp.ok) {
@@ -823,6 +1224,34 @@
             } finally {
                 appsFetching = false;
                 renderAppList();
+                if (homeQuery.trim()) renderHomeResults();
+            }
+        }
+
+        async function fetchYoutubeRelated() {
+            if (youtubeSearching) return;
+            youtubeSearching = true;
+            youtubeError = "";
+            youtubeResults = null;
+            renderYoutubeResults();
+            try {
+                const resp = await fetch(`${API_BASE}/youtube/related`, {headers: getHeaders()});
+                if (!resp.ok) {
+                    youtubeError = resp.status === 401 ? "Authentication required" : `Error ${resp.status}`;
+                } else {
+                    const data = await resp.json();
+                    youtubeResults = data.results || [];
+                    if (data.error) {
+                        youtubeError = data.error;
+                    } else if (!youtubeResults.length) {
+                        youtubeError = "Nothing to play next";
+                    }
+                }
+            } catch (e) {
+                youtubeError = "Connection error";
+            } finally {
+                youtubeSearching = false;
+                renderYoutubeResults();
             }
         }
 
@@ -842,7 +1271,7 @@
                     return;
                 }
                 if (opts.notice) {
-                    showNotice(result.message || "Done");
+                    showNotice(result.message || opts.label || "Done");
                 }
                 if (!opts.silent) {
                     // Buttons repaint at once so the label flips immediately.
@@ -882,14 +1311,227 @@
             el.textContent = msg;
             el.classList.remove("hidden");
             clearTimeout(noticeTimer);
-            noticeTimer = setTimeout(() => el.classList.add("hidden"), 2500);
+            noticeTimer = setTimeout(() => el.classList.add("hidden"), 2200);
         }
 
-        // === UI Rendering ===
+        function buzz(ms) {
+            // Confirmation you can feel: on a phone across the room from the PC
+            // it is the only signal that a tap registered.
+            try { if (navigator.vibrate) navigator.vibrate(ms || 8); } catch (e) {}
+        }
+
+        // === Helpers ===
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+            return String(text).replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function escapeAttr(text) {
+            // Attribute values are parsed as markup too, so escape the same set
+            // as escapeHtml -- quotes alone leave `<` and `&` live.
+            return escapeHtml(text);
+        }
+
+        function targets(kind) {
+            if (!state || !state.targets) return [];
+            return state.targets.filter(t => t.kind === kind);
+        }
+
+        function findTarget(id) {
+            if (!state || !state.targets) return null;
+            return state.targets.find(t => t.id === id) || null;
+        }
+
+        function findAction(target, id) {
+            if (!target || !target.actions) return null;
+            return target.actions.find(a => a && a.id === id) || null;
+        }
+
+        function findAnyAction(target, ids) {
+            for (const id of ids) {
+                const a = findAction(target, id);
+                if (a) return a;
+            }
+            return null;
+        }
+
+        // What a tap on the row body does. Everything else lives behind the
+        // "..." button, so the common case costs one tap and the rare case two.
+        const PRIMARY = {
+            window: ["focus"],
+            app: ["focus"],
+            launcher: ["launch"],
+            steam: ["launch"],
+            streaming: ["launch"],
+            workspace: ["switch"],
+            player: ["play_pause"],
+            youtube_player: ["play_pause"],
+            bluetooth: ["disconnect", "connect", "power_off", "power_on"],
+            command: ["run"],
+        };
+
+        function primaryAction(target) {
+            const ids = PRIMARY[target.kind];
+            if (!ids) return null;
+            const action = findAnyAction(target, ids);
+            return action && action.kind !== "slider" ? action : null;
+        }
+
+        function fmtTime(seconds) {
+            if (seconds === null || seconds === undefined || isNaN(seconds)) return "";
+            const s = Math.max(0, Math.floor(seconds));
+            const h = Math.floor(s / 3600);
+            const m = Math.floor((s % 3600) / 60);
+            const sec = s % 60;
+            const mm = h ? String(m).padStart(2, "0") : String(m);
+            return (h ? h + ":" : "") + mm + ":" + String(sec).padStart(2, "0");
+        }
+
+        function capitalize(s) {
+            return s.charAt(0).toUpperCase() + s.slice(1);
+        }
+
+        // Pluralising the kind works for players and windows and produces
+        // "Bluetooths" and "Streamings" for the rest, so the ones that do not
+        // pluralise are named outright.
+        const KIND_LABELS = {
+            workspace: "Workspaces",
+            streaming: "Streaming",
+            bluetooth: "Bluetooth",
+            system: "System",
+            youtube: "YouTube",
+            youtube_player: "YouTube keys",
+            launcher: "Installed apps",
+            steam: "Games",
+        };
+
+        function kindLabel(kind) {
+            return KIND_LABELS[kind] || capitalize(kind) + "s";
+        }
+
+        const KIND_ICONS = {
+            player: "♪", window: "▣", workspace: "▦", app: "◈",
+            streaming: "📺", bluetooth: "ᛦ", system: "⚙",
+            command: "⌘", launcher: "▸", steam: "🎮",
+            youtube: "▶", youtube_player: "▶",
+        };
+
+        // === Markup builders ===
+        // One row builder for the whole app: every list looks the same, and
+        // every field goes through escapeHtml exactly once on the way in.
+
+        function rowHtml(o) {
+            const attrs = [];
+            if (o.target) attrs.push(`data-target="${escapeAttr(o.target)}"`);
+            if (o.action) attrs.push(`data-action="${escapeAttr(o.action)}"`);
+            if (o.confirm) attrs.push('data-confirm="1"');
+            if (o.nav) attrs.push(`data-nav="${escapeAttr(o.nav)}"`);
+            if (o.category) attrs.push(`data-category="${escapeAttr(o.category)}"`);
+            if (o.tab) attrs.push(`data-tab="${escapeAttr(o.tab)}"`);
+            if (o.sheet) attrs.push(`data-more="${escapeAttr(o.sheet)}"`);
+            if (o.related) attrs.push('data-yt-related="1"');
+            if (o.ytSearch) attrs.push('data-yt-search="1"');
+
+            let cls = "row";
+            if (o.danger) cls += " danger";
+            if (o.on) cls += " on";
+            if (o.extraClass) cls += " " + o.extraClass;
+            if (!attrs.length && !o.more && !o.revoke) cls += " static";
+
+            let html = `<div class="${cls}"${attrs.length ? " " + attrs.join(" ") : ""}>`;
+            if (o.icon) html += `<span class="row-icon">${escapeHtml(o.icon)}</span>`;
+            html += '<div class="row-body">';
+            html += `<div class="row-title">${escapeHtml(o.title)}</div>`;
+            if (o.sub) html += `<div class="row-sub${o.wrap ? " wrap" : ""}">${escapeHtml(o.sub)}</div>`;
+            html += '</div>';
+            if (o.badge !== undefined && o.badge !== null) {
+                html += `<span class="badge">${escapeHtml(String(o.badge))}</span>`;
+            }
+            if (o.meta) html += `<span class="row-meta">${escapeHtml(o.meta)}</span>`;
+            if (o.revoke) {
+                html += `<button class="revoke" data-revoke="${escapeAttr(o.revoke)}">Revoke</button>`;
+            } else if (o.more) {
+                html += `<button class="row-more" data-more="${escapeAttr(o.more)}" aria-label="More actions">⋯</button>`;
+            } else if (o.chevron) {
+                html += '<span class="row-chevron">›</span>';
+            }
+            html += '</div>';
+            return html;
+        }
+
+        function tileHtml(o) {
+            const attrs = [];
+            if (o.target) attrs.push(`data-target="${escapeAttr(o.target)}"`);
+            if (o.action) attrs.push(`data-action="${escapeAttr(o.action)}"`);
+            if (o.confirm) attrs.push('data-confirm="1"');
+            if (o.nav) attrs.push(`data-nav="${escapeAttr(o.nav)}"`);
+            if (o.category) attrs.push(`data-category="${escapeAttr(o.category)}"`);
+            if (o.tab) attrs.push(`data-tab="${escapeAttr(o.tab)}"`);
+            let cls = "tile";
+            if (o.on) cls += " on";
+            if (o.danger) cls += " danger";
+            let html = `<div class="${cls}"${attrs.length ? " " + attrs.join(" ") : ""}>`;
+            html += `<span class="tile-icon">${escapeHtml(o.icon)}</span>`;
+            html += `<span class="tile-label">${escapeHtml(o.label)}</span>`;
+            html += '</div>';
+            return html;
+        }
+
+        function sectionHtml(title, body, link, opts) {
+            if (!body) return "";
+            let html = '<div class="section">';
+            if (title) {
+                html += '<div class="section-head">';
+                html += `<span class="section-title">${escapeHtml(title)}</span>`;
+                if (opts && opts.note) html += `<span class="section-note">${escapeHtml(opts.note)}</span>`;
+                if (link) {
+                    html += `<button class="section-link" data-category="${escapeAttr(link.category || "")}"` +
+                            `${link.tab ? ` data-tab="${escapeAttr(link.tab)}"` : ""}>${escapeHtml(link.label)}</button>`;
+                }
+                html += '</div>';
+            }
+            html += body;
+            html += '</div>';
+            return html;
+        }
+
+        function searchHtml(id, placeholder, value) {
+            let html = '<div class="search">';
+            html += '<span class="search-icon">⌕</span>';
+            html += `<input type="search" id="${id}" placeholder="${escapeAttr(placeholder)}"
+                autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search"
+                value="${escapeAttr(value)}">`;
+            html += `<button class="search-clear${value ? "" : " hidden"}" data-clear="${id}" aria-label="Clear">✕</button>`;
+            html += '</div>';
+            return html;
+        }
+
+        function sliderHtml(target, action) {
+            const pct = Math.round((action.value || 0) * 100);
+            // The name is taken from the action label with its own reading
+            // stripped: "Volume (62%)" is redundant next to a live percentage.
+            const name = String(action.label || "").replace(/\s*\(\d+%\)\s*$/, "");
+            let html = '<div class="slider-row">';
+            html += '<div class="slider-head">';
+            html += `<span class="slider-name">${escapeHtml(name)}</span>`;
+            html += `<span class="slider-value">${pct}%</span>`;
+            html += '</div><div class="slider-control">';
+            html += `<input type="range" min="0" max="1" step="0.01" value="${Number(action.value) || 0}"
+                data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(action.id)}"
+                aria-label="${escapeAttr(name)}">`;
+            html += '</div></div>';
+            return html;
+        }
+
+        // === Rendering ===
         // Re-rendering wipes and rebuilds the DOM, which resets a slider the
-        // user is mid-drag on and drops the caret/scroll position. Two guards:
-        // a hold window while a control is being touched, and a signature
-        // check so identical polls do no DOM work at all.
+        // user is mid-drag on. Two guards: a hold window while a control is
+        // being touched, and a signature check so identical polls do no DOM
+        // work at all. Scroll position and keyboard focus are carried across
+        // the rebuild, so a re-render never closes the phone keyboard or throws
+        // the list back to the top.
         let renderHoldUntil = 0;
         let lastSignature = null;
 
@@ -906,10 +1548,14 @@
             if (Date.now() < renderHoldUntil) return;
 
             const signature = viewSignature();
-            if (signature === lastSignature) return;
-            lastSignature = signature;
-
-            render();
+            if (signature !== lastSignature) {
+                lastSignature = signature;
+                render();
+            }
+            // Progress moves every second. Painting it straight into the DOM
+            // keeps it live without a rebuild -- which is why position never
+            // enters the signature.
+            paintProgress();
         }
 
         function isInstalledView() {
@@ -924,52 +1570,121 @@
             return navStack.length > 0 && navStack[navStack.length - 1].startsWith("devices:");
         }
 
+        // Everything the snapshot carries except the fields that tick: position
+        // and length would otherwise make every view rebuild once a second.
+        function stateSignature(kinds) {
+            if (!state || !state.targets) return "";
+            const list = kinds
+                ? state.targets.filter(t => kinds.indexOf(t.kind) !== -1)
+                : state.targets;
+            return JSON.stringify(list.map(t => [
+                t.id, t.kind, t.title, t.subtitle, t.icon, t.status, t.note,
+                (t.actions || []).map(a => [a.id, a.label, a.kind, a.value]),
+            ]));
+        }
+
         function viewSignature() {
             const nav = navStack.join(">");
             // The installed list and YouTube search come from separate endpoints,
-            // not the snapshot, so a state poll must not re-render them --
-            // rebuilding would wipe the search box or lose focus.
+            // not the snapshot, so a state poll must not re-render them.
             if (isInstalledView()) return "installed|" + nav;
             if (isDevicesView()) return "devices|" + nav;
             // The YouTube view is otherwise pinned against state polls, but the
             // autoplay banner has to clear itself once the fix lands, so let
             // that one field through.
             if (isYoutubeView()) return "youtube|" + nav + "|" + youtubeNotice();
-            return (state ? JSON.stringify(state) : "") + "|" + nav;
+            if (nav) return tab + "|" + nav + "|" + stateSignature();
+            if (tab === "media") {
+                return "media|" + youtubeNotice() + "|" +
+                       stateSignature(["player", "youtube_player", "youtube", "system"]);
+            }
+            if (tab === "apps") {
+                return "apps|" + appsFilter + "|" +
+                       stateSignature(["window", "app", "streaming", "steam", "workspace"]);
+            }
+            if (tab === "system") {
+                return "system|" + stateSignature(["system", "bluetooth", "workspace", "command"]);
+            }
+            return "home|" + (homeQuery.trim() ? "q" : "") + "|" + stateSignature();
+        }
+
+        // Rebuilding innerHTML drops the caret, closes the phone keyboard and
+        // scrolls the list back to the top. All three are restored around it.
+        function captureUI() {
+            const content = document.getElementById("content");
+            const active = document.activeElement;
+            const snap = {scrollTop: content ? content.scrollTop : 0};
+            if (active && active.id && (active.tagName === "INPUT")) {
+                snap.focusId = active.id;
+                try {
+                    snap.selStart = active.selectionStart;
+                    snap.selEnd = active.selectionEnd;
+                } catch (e) {}
+            }
+            return snap;
+        }
+
+        function restoreUI(snap) {
+            const content = document.getElementById("content");
+            if (content && snap.scrollTop) content.scrollTop = snap.scrollTop;
+            if (!snap.focusId) return;
+            const el = document.getElementById(snap.focusId);
+            if (!el) return;
+            el.focus();
+            if (snap.selStart !== undefined && snap.selStart !== null) {
+                try { el.setSelectionRange(snap.selStart, snap.selEnd); } catch (e) {}
+            }
+        }
+
+        const VIEW_TITLES = {home: "VoiceTalk", media: "Media", apps: "Apps", system: "System"};
+
+        function currentTitle() {
+            if (!navStack.length) return VIEW_TITLES[tab] || "VoiceTalk";
+            const item = navStack[navStack.length - 1];
+            const idx = item.indexOf(":");
+            const type = item.substring(0, idx);
+            const key = item.substring(idx + 1);
+            if (type === "category") return kindLabel(key);
+            if (type === "installed") return "Installed apps";
+            if (type === "youtube") return "YouTube";
+            if (type === "devices") return "Paired devices";
+            if (type === "target") {
+                const t = findTarget(key);
+                return t ? t.title : "Details";
+            }
+            return "VoiceTalk";
         }
 
         function render() {
+            const app = document.getElementById("app");
             if (authState === "pairing") { renderPairing(); return; }
+            app.classList.remove("no-chrome");
             lastSignature = state ? viewSignature() : null;
+
             const content = document.getElementById("content");
-            const breadcrumb = document.getElementById("breadcrumb");
+            const snap = captureUI();
 
-            // Update breadcrumb
-            if (navStack.length > 0) {
-                let html = '<button data-nav-top="1">≡ home</button>';
-                for (let i = 0; i < navStack.length; i++) {
-                    const parts = navStack[i].split(":", 1);
-                    const label = navStack[i].substring(parts[0].length + 1) || navStack[i];
-                    html += ' / <span>' + escapeHtml(label) + '</span>';
-                }
-                if (navStack.length > 0) {
-                    html += ' <button class="push-right" data-nav-pop="1">&lt; back</button>';
-                }
-                breadcrumb.innerHTML = html;
-                breadcrumb.classList.remove("hidden");
-            } else {
-                breadcrumb.classList.add("hidden");
-            }
+            document.getElementById("viewTitle").textContent = currentTitle();
+            const back = document.getElementById("backBtn");
+            if (navStack.length > 0) back.classList.remove("hidden");
+            else back.classList.add("hidden");
 
-            // Render current view
+            document.querySelectorAll("#tabbar .tab").forEach(el => {
+                if (el.dataset.tab === tab) el.classList.add("active");
+                else el.classList.remove("active");
+            });
+
             content.innerHTML = "";
             if (!state) {
-                content.innerHTML = '<div class="empty">Loading...</div>';
+                content.innerHTML = '<div class="empty">Connecting…</div>';
                 return;
             }
 
             if (navStack.length === 0) {
-                renderHome(content);
+                if (tab === "media") renderMedia(content);
+                else if (tab === "apps") renderApps(content);
+                else if (tab === "system") renderSystem(content);
+                else renderHome(content);
             } else {
                 const currentItem = navStack[navStack.length - 1];
                 const colonIdx = currentItem.indexOf(":");
@@ -988,54 +1703,375 @@
                     renderDevices(content);
                 }
             }
+
+            restoreUI(snap);
+            paintProgress();
         }
 
-        function renderHome(el) {
-            const kinds = {};
-            state.targets.forEach(t => {
-                if (!kinds[t.kind]) kinds[t.kind] = [];
-                kinds[t.kind].push(t);
+        // Progress bars are written straight to the DOM every poll, so the bar
+        // advances without the view being rebuilt under the user's thumb.
+        function paintProgress() {
+            document.querySelectorAll("[data-progress-for]").forEach(el => {
+                const target = findTarget(el.dataset.progressFor);
+                const fill = el.querySelector(".progress-fill");
+                const now = el.querySelector(".time-now");
+                const total = el.querySelector(".time-total");
+                if (!target || !target.length || target.position === null ||
+                    target.position === undefined) {
+                    if (fill) fill.style.width = "0%";
+                    return;
+                }
+                const pct = Math.max(0, Math.min(100, (target.position / target.length) * 100));
+                if (fill) fill.style.width = pct.toFixed(1) + "%";
+                if (now) now.textContent = fmtTime(target.position);
+                if (total) total.textContent = fmtTime(target.length);
             });
+        }
 
-            const order = ["player", "window", "app", "system", "command"];
+        // --- players --------------------------------------------------------
+
+        const TRANSPORT_ICONS = {
+            prev: "⏮", next: "⏭", seek_back: "↺", seek_fwd: "↻",
+            stop: "⏹", mute: "🔇", fullscreen: "⛶",
+            volume_up: "🔊", volume_down: "🔉",
+        };
+
+        function playerCardHtml(target, opts) {
+            opts = opts || {};
+            const playing = target.status === "playing";
+            const playPause = findAction(target, "play_pause");
+
+            let html = '<div class="card"><div class="player">';
+            html += '<div class="player-head">';
+            html += `<span class="player-art">${escapeHtml(target.icon || "♪")}</span>`;
+            html += '<div class="row-body">';
+            html += `<div class="player-title">${escapeHtml(target.title)}</div>`;
+            const sub = target.subtitle || target.status || "";
+            if (sub) html += `<div class="player-sub">${escapeHtml(sub)}</div>`;
+            html += '</div>';
+            html += `<button class="row-more" data-more="${escapeAttr(target.id)}" aria-label="More actions">⋯</button>`;
+            html += '</div>';
+
+            if (target.length) {
+                html += `<div data-progress-for="${escapeAttr(target.id)}">`;
+                html += '<div class="progress"><div class="progress-fill"></div></div>';
+                html += '<div class="progress-times"><span class="time-now">0:00</span>' +
+                        '<span class="time-total">0:00</span></div>';
+                html += '</div>';
+            }
+
+            // Transport: the reason this card exists. Pause is one tap from the
+            // moment the page opens, with no list to walk down first.
+            const order = ["seek_back", "prev"];
+            const tail = ["next", "seek_fwd"];
+            let buttons = "";
+            order.forEach(id => {
+                const a = findAction(target, id);
+                if (a) buttons += transportBtn(target, a, "wide");
+            });
+            if (playPause) {
+                buttons += `<button class="tbtn primary" data-target="${escapeAttr(target.id)}"` +
+                    ` data-action="${escapeAttr(playPause.id)}"` +
+                    ` aria-label="${escapeAttr(playPause.label)}">${playing ? "⏸" : "▶"}</button>`;
+            }
+            tail.forEach(id => {
+                const a = findAction(target, id);
+                if (a) buttons += transportBtn(target, a, "wide");
+            });
+            if (opts.extra) {
+                opts.extra.forEach(id => {
+                    const a = findAction(target, id);
+                    if (a) buttons += transportBtn(target, a, "wide");
+                });
+            }
+            if (buttons) html += `<div class="transport">${buttons}</div>`;
+
+            const volume = (target.actions || []).find(a => a && a.kind === "slider");
+            if (volume) html += sliderHtml(target, volume);
+
+            html += '</div></div>';
+            return html;
+        }
+
+        function transportBtn(target, action, extraClass) {
+            const icon = TRANSPORT_ICONS[action.id] || action.label;
+            return `<button class="tbtn ${extraClass || ""}" data-target="${escapeAttr(target.id)}"` +
+                ` data-action="${escapeAttr(action.id)}"` +
+                ` aria-label="${escapeAttr(action.label)}">${escapeHtml(icon)}</button>`;
+        }
+
+        function playerTargets() {
+            if (!state || !state.targets) return [];
+            return state.targets.filter(t => t.kind === "player" || t.kind === "youtube_player");
+        }
+
+        // --- home ------------------------------------------------------------
+
+        function renderHome(el) {
+            let html = searchHtml("homeSearch", "Search apps, windows, anything", homeQuery);
+            html += '<div id="homeResults"></div>';
+            el.innerHTML = html;
+            renderHomeResults();
+        }
+
+        function renderHomeResults() {
+            const box = document.getElementById("homeResults");
+            if (!box) return;
+            box.innerHTML = homeQuery.trim() ? homeSearchHtml() : homeDashboardHtml();
+        }
+
+        function homeDashboardHtml() {
             let html = "";
 
+            // 1. What is playing, with its controls already on screen.
+            const players = playerTargets();
+            if (players.length) {
+                html += sectionHtml("Now playing",
+                    players.map(t => playerCardHtml(t)).join(""));
+            }
+
+            // 2. One-tap toggles. Each of these was three taps away before.
+            const tiles = quickTilesHtml();
+            if (tiles) html += sectionHtml("Quick actions", `<div class="tiles">${tiles}</div>`);
+
+            // 3. The two sliders anyone actually reaches for.
+            let sliders = "";
+            const audio = findTarget("system:audio");
+            const vol = findAction(audio, "volume");
+            if (audio && vol) sliders += sliderHtml(audio, vol);
+            const display = findTarget("system:display");
+            const bright = findAction(display, "brightness");
+            if (display && bright) sliders += sliderHtml(display, bright);
+            if (sliders) html += sectionHtml("", `<div class="card">${sliders}</div>`);
+
+            // 4. Everything else, one tap deep and counted so it is obvious
+            //    which rows are worth opening.
+            const order = ["window", "workspace", "app", "streaming", "steam",
+                           "bluetooth", "system", "command"];
+            let rows = "";
             order.forEach(kind => {
-                if (kinds[kind]) {
-                    const count = kinds[kind].length;
-                    html += `<div class="list-item" data-category="${escapeAttr(kind)}">`;
-                    html += `<span class="list-item-label">${capitalize(kind)}s</span>`;
-                    html += `<span class="list-item-value">${count}</span>`;
-                    html += `</div>`;
-                }
+                const list = targets(kind);
+                if (!list.length) return;
+                rows += rowHtml({
+                    icon: KIND_ICONS[kind] || "●",
+                    title: kindLabel(kind),
+                    badge: list.length,
+                    category: kind,
+                    chevron: true,
+                });
+            });
+            rows += rowHtml({
+                icon: "🔑", title: "Paired devices",
+                nav: "devices:list", chevron: true,
+            });
+            html += sectionHtml("Browse", `<div class="card">${rows}</div>`);
+            return html;
+        }
+
+        // The server sends one action whose label is already the verb ("Do
+        // not disturb" / "Allow notifications"). Pairing that with the raw
+        // status read as a contradiction, so the state is spelled out instead.
+        function notifToggle(notif) {
+            if (!notif || !notif.actions || !notif.actions.length) return null;
+            const action = notif.actions[0];
+            const quiet = action.id === "dnd_off";
+            return {
+                action: action,
+                quiet: quiet,
+                icon: quiet ? "🔕" : "🔔",
+                short: quiet ? "Notify" : "Silence",
+                state: quiet ? "Notifications are silenced" : "Notifications are showing",
+            };
+        }
+
+        function quickTilesHtml() {
+            let html = "";
+
+            const audio = findTarget("system:audio");
+            const mute = findAction(audio, "mute");
+            if (audio && mute) {
+                const muted = audio.status === "muted";
+                html += tileHtml({
+                    icon: muted ? "🔇" : "🔊",
+                    label: mute.label,
+                    target: audio.id, action: mute.id, on: muted,
+                });
+            }
+
+            const notif = findTarget("system:notifications");
+            const dnd = notifToggle(notif);
+            if (dnd) {
+                html += tileHtml({
+                    icon: dnd.icon, label: dnd.short,
+                    target: notif.id, action: dnd.action.id, on: dnd.quiet,
+                });
+            }
+
+            const power = findTarget("system:power");
+            const lock = findAction(power, "lock");
+            if (lock) {
+                html += tileHtml({icon: "🔒", label: "Lock", target: power.id, action: lock.id});
+            }
+
+            html += tileHtml({icon: "▶", label: "YouTube", nav: "youtube:search"});
+
+            if (targets("streaming").length) {
+                html += tileHtml({icon: "📺", label: "Streaming", category: "streaming"});
+            }
+
+            html += tileHtml({icon: "▸", label: "Launch app", tab: "apps"});
+
+            const suspend = findAction(power, "suspend");
+            if (suspend) {
+                html += tileHtml({icon: "💤", label: "Suspend", target: power.id, action: suspend.id});
+            }
+
+            return html;
+        }
+
+        // One field over everything the phone can reach: running windows, apps
+        // on disk, streaming services, commands. Two taps from opening the page
+        // to launching anything by name.
+        function homeSearchHtml() {
+            const q = homeQuery.trim().toLowerCase();
+            const tokens = q.split(/\s+/).filter(Boolean);
+            const matches = (hay) => tokens.every(tok => hay.toLowerCase().includes(tok));
+
+            let html = "";
+            const groups = [
+                ["Open now", ["player", "youtube_player", "window", "app"]],
+                ["Shortcuts", ["streaming", "command", "workspace", "bluetooth", "system"]],
+            ];
+
+            groups.forEach(([label, kinds]) => {
+                const list = (state.targets || []).filter(t =>
+                    kinds.indexOf(t.kind) !== -1 &&
+                    matches(`${t.title} ${t.subtitle || ""} ${kindLabel(t.kind)}`));
+                if (!list.length) return;
+                html += sectionHtml(label,
+                    `<div class="card">${list.slice(0, 12).map(targetRowHtml).join("")}</div>`);
             });
 
-            // Always offered, running or not: launching an app that is not
-            // open yet is the whole point of this row.
-            html += `<div class="list-item" data-nav="installed:apps">`;
-            html += `<span class="list-item-label">Installed apps</span>`;
-            html += `<span class="list-item-value">${installedApps ? installedApps.length : "search"}</span>`;
-            html += `</div>`;
+            if (installedApps === null) {
+                fetchApps();
+                html += sectionHtml("Installed", '<div class="empty">Loading apps…</div>');
+            } else {
+                const apps = installedApps.filter(a =>
+                    matches(`${a.title} ${a.subtitle || ""} ${a.id}`)).slice(0, 12);
+                if (apps.length) {
+                    html += sectionHtml("Installed",
+                        `<div class="card">${apps.map(a => rowHtml({
+                            icon: a.icon || "▸",
+                            title: a.title,
+                            sub: a.subtitle,
+                            target: a.id,
+                            action: "launch",
+                        })).join("")}</div>`);
+                }
+            }
 
-            // YouTube search
-            html += `<div class="list-item" data-nav="youtube:search">`;
-            html += `<span class="list-item-label">▶️ YouTube Search</span>`;
-            html += `<span class="list-item-value">search</span>`;
-            html += `</div>`;
+            html += sectionHtml("", `<div class="card">${rowHtml({
+                icon: "▶",
+                title: `Search YouTube for "${homeQuery.trim()}"`,
+                ytSearch: true,
+                chevron: true,
+            })}</div>`);
 
-            html += `<div class="list-item" data-nav="devices:list">`;
-            html += `<span class="list-item-label">🔑 Paired devices</span>`;
-            html += `<span class="list-item-value">${devicesList ? devicesList.length : "manage"}</span>`;
-            html += `</div>`;
+            return html;
+        }
+
+        function targetRowHtml(t) {
+            const primary = primaryAction(t);
+            const extra = (t.actions || []).filter(a => a && a.id !== (primary && primary.id));
+            const on = t.status === "playing" || t.status === "active" || t.status === "connected";
+            // "configured" on every command row is noise: it says nothing that
+            // the row's presence does not already say.
+            const meta = t.status && !t.subtitle && t.status !== "configured" ? t.status : "";
+            if (!primary) {
+                // Nothing obvious to run on a tap, so the row opens its own
+                // sheet rather than a whole screen -- unless it has no actions
+                // at all, where tapping could only ever say "no actions".
+                return rowHtml({
+                    icon: t.icon || KIND_ICONS[t.kind] || "●",
+                    title: t.title,
+                    sub: t.subtitle,
+                    meta: meta,
+                    sheet: extra.length ? t.id : "",
+                    chevron: extra.length > 0,
+                    on: on,
+                });
+            }
+            return rowHtml({
+                icon: t.icon || KIND_ICONS[t.kind] || "●",
+                title: t.title,
+                sub: t.subtitle,
+                meta: meta,
+                target: t.id,
+                action: primary.id,
+                confirm: primary.kind === "confirm",
+                danger: primary.kind === "confirm",
+                more: extra.length ? t.id : "",
+                on: on,
+            });
+        }
+
+        // --- media -----------------------------------------------------------
+
+        function renderMedia(el) {
+            let html = "";
+            const players = playerTargets();
+            if (players.length) {
+                html += sectionHtml("Now playing", players.map(t =>
+                    playerCardHtml(t, {extra: ["fullscreen", "mute"]})).join(""));
+            } else {
+                html += '<div class="empty">Nothing is playing.</div>';
+            }
+
+            const audio = findTarget("system:audio");
+            const vol = findAction(audio, "volume");
+            if (audio && vol) {
+                let card = sliderHtml(audio, vol);
+                const mute = findAction(audio, "mute");
+                if (mute) {
+                    card += rowHtml({
+                        icon: audio.status === "muted" ? "🔇" : "🔊",
+                        title: mute.label, target: audio.id, action: mute.id,
+                        on: audio.status === "muted",
+                    });
+                }
+                html += sectionHtml("System volume", `<div class="card">${card}</div>`);
+            }
+
+            let rows = rowHtml({
+                icon: "⏭", title: "Up next",
+                sub: "from what's playing", related: true,
+            });
+            rows += rowHtml({
+                icon: "▶", title: "Search YouTube",
+                nav: "youtube:search", chevron: true,
+            });
+            const streaming = targets("streaming");
+            if (streaming.length) {
+                rows += rowHtml({
+                    icon: "📺", title: "Streaming services",
+                    badge: streaming.length, category: "streaming", chevron: true,
+                });
+            }
+            html += sectionHtml("Watch", `<div class="card">${rows}</div>`);
 
             el.innerHTML = html;
         }
 
-        function renderInstalled(el) {
-            let html = '<div class="search-bar">';
-            html += `<input type="search" id="appSearch" placeholder="Search installed apps"
-                autocomplete="off" autocapitalize="off" spellcheck="false"
-                value="${escapeAttr(installedQuery)}">`;
+        // --- apps ------------------------------------------------------------
+
+        function renderApps(el) {
+            let html = searchHtml("appSearch", "Search apps and windows", installedQuery);
+            html += '<div class="chips">';
+            [["all", "All"], ["running", "Open"], ["installed", "Installed"],
+             ["streaming", "Streaming"]].forEach(([id, label]) => {
+                html += `<button class="chip${appsFilter === id ? " active" : ""}" data-filter="${id}">` +
+                        `${escapeHtml(label)}</button>`;
+            });
             html += '</div><div id="appList"></div>';
             el.innerHTML = html;
 
@@ -1043,280 +2079,238 @@
             if (installedApps === null) fetchApps();
         }
 
+        // Only the list is rebuilt when the query changes: re-rendering the
+        // whole view would drop the caret and close the phone keyboard.
         function renderAppList() {
-            // Only the list is rebuilt when the query changes: re-rendering the
-            // whole view would drop the caret and close the phone keyboard.
             const list = document.getElementById("appList");
             if (!list) return;
 
-            if (installedApps === null) {
-                list.innerHTML = installedError
-                    ? `<div class="empty">${escapeHtml(installedError)}</div>`
-                    : '<div class="empty">Loading...</div>';
-                return;
-            }
-
             const tokens = installedQuery.toLowerCase().split(/\s+/).filter(Boolean);
-            const matches = installedApps.filter(app => {
-                if (!tokens.length) return true;
-                const hay = `${app.title} ${app.subtitle || ""} ${app.id}`.toLowerCase();
-                return tokens.every(tok => hay.includes(tok));
-            });
+            const matches = (hay) => tokens.every(tok => hay.toLowerCase().includes(tok));
+            let html = "";
 
-            if (!matches.length) {
-                list.innerHTML = '<div class="empty">No matching apps</div>';
-                return;
+            if (appsFilter === "all" || appsFilter === "running") {
+                const open = (state && state.targets ? state.targets : []).filter(t =>
+                    (t.kind === "window" || t.kind === "app") &&
+                    matches(`${t.title} ${t.subtitle || ""}`));
+                if (open.length) {
+                    html += sectionHtml("Open now",
+                        `<div class="card">${open.map(targetRowHtml).join("")}</div>`);
+                }
             }
 
-            let html = "";
-            matches.forEach(app => {
-                // Names, generic names and comments come from .desktop files on
-                // disk -- less hostile than a window title, but escaped all the
-                // same, since one bad entry would run script on this origin.
-                html += `<div class="list-item action" data-target="${escapeAttr(app.id)}" data-action="launch">`;
-                html += `<span class="list-item-icon">${escapeHtml(app.icon || "\u25b8")}</span>`;
-                html += `<span class="list-item-label">${escapeHtml(app.title)}</span>`;
-                if (app.subtitle) {
-                    html += `<span class="list-item-value">${escapeHtml(app.subtitle)}</span>`;
+            if (appsFilter === "all" || appsFilter === "streaming") {
+                const services = (state && state.targets ? state.targets : []).filter(t =>
+                    (t.kind === "streaming" || t.kind === "steam") &&
+                    matches(`${t.title} ${t.subtitle || ""}`));
+                if (services.length) {
+                    html += sectionHtml("Streaming & games",
+                        `<div class="card">${services.map(targetRowHtml).join("")}</div>`);
                 }
-                html += `</div>`;
-            });
+            }
+
+            if (appsFilter === "all" || appsFilter === "installed") {
+                if (installedApps === null) {
+                    html += installedError
+                        ? `<div class="empty">${escapeHtml(installedError)}</div>`
+                        : '<div class="empty">Loading apps…</div>';
+                } else {
+                    // Names, generic names and comments come from .desktop files
+                    // on disk -- less hostile than a window title, but escaped
+                    // all the same, since one bad entry would run script on this
+                    // origin.
+                    const apps = installedApps.filter(app =>
+                        matches(`${app.title} ${app.subtitle || ""} ${app.id}`));
+                    if (apps.length) {
+                        html += sectionHtml("Installed",
+                            `<div class="card">${apps.map(app => rowHtml({
+                                icon: app.icon || "▸",
+                                title: app.title,
+                                sub: app.subtitle,
+                                target: app.id,
+                                action: "launch",
+                            })).join("")}</div>`);
+                    }
+                }
+            }
+
+            if (!html) html = '<div class="empty">Nothing matches.</div>';
             list.innerHTML = html;
         }
 
-        function renderCategory(el, kind) {
-            const targets = state.targets.filter(t => t.kind === kind);
-            if (!targets.length) {
-                el.innerHTML = '<div class="empty">No ' + kind + 's</div>';
-                return;
+        // --- system ----------------------------------------------------------
+
+        function renderSystem(el) {
+            let html = "";
+
+            let sliders = "";
+            const audio = findTarget("system:audio");
+            const vol = findAction(audio, "volume");
+            if (audio && vol) sliders += sliderHtml(audio, vol);
+            const display = findTarget("system:display");
+            const bright = findAction(display, "brightness");
+            if (display && bright) sliders += sliderHtml(display, bright);
+            if (sliders) html += sectionHtml("", `<div class="card">${sliders}</div>`);
+
+            let toggles = "";
+            const mute = findAction(audio, "mute");
+            if (audio && mute) {
+                toggles += rowHtml({
+                    icon: audio.status === "muted" ? "🔇" : "🔊",
+                    title: mute.label, target: audio.id, action: mute.id,
+                    on: audio.status === "muted",
+                });
+            }
+            const notif = findTarget("system:notifications");
+            const dnd = notifToggle(notif);
+            if (dnd) {
+                toggles += rowHtml({
+                    icon: dnd.icon, title: dnd.action.label, sub: dnd.state,
+                    target: notif.id, action: dnd.action.id, on: dnd.quiet,
+                });
+            }
+            if (toggles) html += sectionHtml("Toggles", `<div class="card">${toggles}</div>`);
+
+            const workspaces = targets("workspace");
+            if (workspaces.length) {
+                html += sectionHtml("Workspaces",
+                    `<div class="card">${workspaces.map(targetRowHtml).join("")}</div>`);
             }
 
-            let html = "";
-            targets.forEach(t => {
-                // Every field here is attacker-influenced: window titles and MPRIS
-                // metadata come straight from whatever the user has open, so a page
-                // titled `<img onerror=...>` would otherwise run script on this
-                // origin -- where the API token lives in localStorage.
-                const icon = t.icon || "●";
-                html += `<div class="list-item" data-nav="target:${escapeAttr(t.id)}">`;
-                html += `<span class="list-item-icon">${escapeHtml(icon)}</span>`;
-                html += `<span class="list-item-label">${escapeHtml(t.title)}</span>`;
-                if (t.subtitle) {
-                    html += `<span class="list-item-value">${escapeHtml(t.subtitle)}</span>`;
-                }
-                html += `</div>`;
-            });
+            const bt = targets("bluetooth");
+            if (bt.length) {
+                html += sectionHtml("Bluetooth",
+                    `<div class="card">${bt.map(targetRowHtml).join("")}</div>`);
+            }
+
+            const commands = targets("command");
+            if (commands.length) {
+                html += sectionHtml("Commands",
+                    `<div class="card">${commands.map(targetRowHtml).join("")}</div>`);
+            }
+
+            const power = findTarget("system:power");
+            if (power) {
+                let tiles = "";
+                (power.actions || []).forEach(a => {
+                    const icons = {
+                        lock: "🔒", suspend: "💤",
+                        restart: "↻", shutdown: "⏻",
+                    };
+                    tiles += tileHtml({
+                        icon: icons[a.id] || "⚙", label: a.label,
+                        target: power.id, action: a.id,
+                        confirm: a.kind === "confirm", danger: a.kind === "confirm",
+                    });
+                });
+                html += sectionHtml("Power", `<div class="tiles">${tiles}</div>`,
+                                    null, {note: power.subtitle || power.status});
+            }
+
+            html += sectionHtml("This device", `<div class="card">${rowHtml({
+                icon: "🔑", title: "Paired devices",
+                nav: "devices:list", chevron: true,
+            })}</div>`);
+
             el.innerHTML = html;
         }
 
-        function renderTarget(el, targetId) {
-            const target = state.targets.find(t => t.id === targetId);
-            if (!target) {
-                el.innerHTML = '<div class="empty">Target not found: ' + escapeHtml(targetId) + '</div>';
+        // --- category & target ------------------------------------------------
+
+        function renderCategory(el, kind) {
+            const list = (state && state.targets ? state.targets : []).filter(t => t.kind === kind);
+            if (!list.length) {
+                el.innerHTML = `<div class="empty">No ${escapeHtml(kindLabel(kind).toLowerCase())} right now.</div>`;
                 return;
             }
+            // Every field here is attacker-influenced: window titles and MPRIS
+            // metadata come straight from whatever the user has open, so a page
+            // titled `<img onerror=...>` would otherwise run script on this
+            // origin -- where the API token lives in localStorage.
+            el.innerHTML = `<div class="card">${list.map(targetRowHtml).join("")}</div>`;
+        }
 
-            let html = "";
-            html += `<div class="list-item"><span class="list-item-label strong">${escapeHtml(target.title)}</span></div>`;
-
-            if (target.subtitle) {
-                html += `<div class="list-item"><span class="list-item-value">${escapeHtml(target.subtitle)}</span></div>`;
+        function renderTarget(el, targetId) {
+            const target = findTarget(targetId);
+            if (!target) {
+                el.innerHTML = `<div class="empty">Gone: ${escapeHtml(targetId)}</div>`;
+                return;
             }
+            el.innerHTML = targetDetailHtml(target);
+        }
 
-            if (target.status) {
-                html += `<div class="list-item"><span class="list-item-label">Status: <span class="accent">${escapeHtml(target.status)}</span></span></div>`;
-            }
+        function targetDetailHtml(target) {
+            let html = '<div class="sheet-head">';
+            html += `<div class="sheet-title">${escapeHtml(target.title)}</div>`;
+            const sub = [target.subtitle, target.status].filter(Boolean).join(" · ");
+            if (sub) html += `<div class="sheet-sub">${escapeHtml(sub)}</div>`;
+            html += '</div>';
 
             // Why a control the player claims to support is not offered. Without
             // this the absence just looks like a missing feature in vt.
             if (target.note) {
-                html += `<div class="list-item"><span class="list-item-value wrap">${escapeHtml(target.note)}</span></div>`;
+                html += `<div class="sheet-note">${escapeHtml(target.note)}</div>`;
             }
 
-            if (target.position !== null && target.length !== null && target.length > 0) {
-                const pct = Math.round((target.position / target.length) * 100);
-                html += `<div class="list-item"><span class="list-item-label">Progress: ${pct}%</span></div>`;
-            }
-
-            // Sliders
             const sliders = (target.actions || []).filter(a => a && a.kind === "slider");
-            sliders.forEach(action => {
-                const pct = Math.round((action.value || 0) * 100);
-                // Ids are not derived from target.id any more: escaping it for the
-                // attribute changed the string, so getElementById then looked up a
-                // name that was never in the document. The label is found by
-                // structure instead.
-                html += `<div class="slider-container">`;
-                html += `<div class="slider-label">${escapeHtml(action.label)}</div>`;
-                html += `<div class="slider-control">`;
-                html += `<input type="range" min="0" max="1" step="0.01" value="${Number(action.value) || 0}"
-                    data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(action.id)}">`;
-                html += `<span class="slider-value">${pct}%</span>`;
-                html += `</div></div>`;
-            });
+            if (sliders.length) {
+                html += `<div class="card">${sliders.map(a => sliderHtml(target, a)).join("")}</div>`;
+            }
 
-            // Buttons
             const buttons = (target.actions || []).filter(a => a && a.kind !== "slider");
-            buttons.forEach(action => {
-                const isDanger = action.kind === "confirm";
-                html += `<div class="list-item action ${isDanger ? "danger" : ""}"
-                    data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(action.id)}"
-                    ${isDanger ? 'data-confirm="1"' : ""}>`;
-                html += `<span class="list-item-label">${escapeHtml(action.label)}</span>`;
-                html += `</div>`;
-            });
-
-            if (!target.actions || target.actions.length === 0) {
-                html += `<div class="empty pad">No actions</div>`;
+            if (buttons.length) {
+                html += sliders.length ? '<div class="section"></div>' : "";
+                html += '<div class="actions">';
+                buttons.forEach(action => {
+                    const danger = action.kind === "confirm";
+                    html += `<button class="abtn${danger ? " danger" : ""}"` +
+                        ` data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(action.id)}"` +
+                        `${danger ? ' data-confirm="1"' : ""}>${escapeHtml(action.label)}</button>`;
+                });
+                html += '</div>';
             }
 
+            if (!sliders.length && !buttons.length) {
+                html += '<div class="empty">No actions available.</div>';
+            }
+            return html;
+        }
+
+        // --- action sheet -------------------------------------------------------
+        // Opening the full action list as a sheet rather than a new screen: the
+        // list underneath keeps its scroll position, so closing it costs nothing.
+
+        function openSheet(targetId) {
+            const target = findTarget(targetId);
+            if (!target) return;
+            sheetTarget = targetId;
+            document.getElementById("sheetBody").innerHTML = targetDetailHtml(target);
+            document.getElementById("sheetOverlay").classList.remove("hidden");
+        }
+
+        function closeSheet() {
+            sheetTarget = null;
+            document.getElementById("sheetOverlay").classList.add("hidden");
+        }
+
+        function refreshSheet() {
+            if (!sheetTarget) return;
+            const target = findTarget(sheetTarget);
+            if (!target) { closeSheet(); return; }
+            document.getElementById("sheetBody").innerHTML = targetDetailHtml(target);
+        }
+
+        // --- installed (legacy route) --------------------------------------------
+
+        function renderInstalled(el) {
+            let html = searchHtml("appSearch", "Search installed apps", installedQuery);
+            html += '<div id="appList"></div>';
             el.innerHTML = html;
+            renderAppList();
+            if (installedApps === null) fetchApps();
         }
 
-        function escapeHtml(text) {
-            if (!text) return '';
-            const map = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
-            return text.replace(/[&<>"']/g, m => map[m]);
-        }
-
-        function escapeAttr(text) {
-            // Attribute values are parsed as markup too, so escape the same set
-            // as escapeHtml -- quotes alone leave `<` and `&` live.
-            return escapeHtml(text);
-        }
-
-        let sliderTimeout = null;
-        let youtubeSearchTimeout = null;
-        function handleSliderChange(input) {
-            const targetId = input.dataset.target;
-            const actionId = input.dataset.action;
-            const value = input.value;
-            // Paint the new value immediately; the server confirms a beat later.
-            const pct = Math.round(parseFloat(value) * 100);
-            const label = input.parentElement.querySelector(".slider-value");
-            if (label) label.textContent = pct + '%';
-
-            // Freeze re-renders while dragging so the thumb stays put.
-            holdRender(900);
-
-            clearTimeout(sliderTimeout);
-            sliderTimeout = setTimeout(() => {
-                doAction(targetId, actionId, parseFloat(value), {silent: true});
-                // Keep holding past the round trip: the next poll may still
-                // carry the pre-change reading and would snap the thumb back.
-                holdRender(900);
-            }, 120);
-        }
-
-        function actionLabel(targetId, actionId) {
-            if (!state || !state.targets) return "";
-            const target = state.targets.find(t => t.id === targetId);
-            if (!target) return "";
-            const action = (target.actions || []).find(a => a && a.id === actionId);
-            return action ? action.label : "";
-        }
-
-        function handleAction(targetId, actionId, isConfirm) {
-            if (isConfirm) {
-                currentConfirm = {targetId, actionId};
-                // "Confirm this action?" gave no way to tell Close from a
-                // browser restart -- name the action being confirmed.
-                const label = actionLabel(targetId, actionId);
-                document.getElementById("confirmText").textContent =
-                    label ? `${label}?` : "Confirm this action?";
-                document.getElementById("confirmOverlay").classList.remove("hidden");
-            } else if (actionId === "launch") {
-                // Silent: a launch changes nothing this view shows, and a
-                // re-render would wipe the search box. The notice is the
-                // feedback instead.
-                doAction(targetId, actionId, undefined, {silent: true, notice: true});
-            } else {
-                doAction(targetId, actionId);
-            }
-        }
-
-        function doConfirm() {
-            if (currentConfirm) {
-                // Confirmed actions are the consequential ones -- a close, a
-                // quit, a browser restart. Showing what came back is how the
-                // user knows it happened without checking the PC.
-                doAction(currentConfirm.targetId, currentConfirm.actionId, undefined, {notice: true});
-                cancelConfirm();
-            }
-        }
-
-        function cancelConfirm() {
-            currentConfirm = null;
-            document.getElementById("confirmOverlay").classList.add("hidden");
-        }
-
-        // Handlers are delegated rather than inlined into onclick=. An inline
-        // handler puts data in two parsers at once -- the HTML attribute parser
-        // decodes entities before JS sees the string -- so no single escape is
-        // correct there. Data attributes have exactly one parser.
-        function bindDelegatedHandlers() {
-            const content = document.getElementById("content");
-
-            document.getElementById("confirmCancel").addEventListener("click", cancelConfirm);
-            document.getElementById("confirmOk").addEventListener("click", doConfirm);
-
-            document.getElementById("breadcrumb").addEventListener("click", (ev) => {
-                if (ev.target.closest("[data-nav-top]")) { navTop(); return; }
-                if (ev.target.closest("[data-nav-pop]")) { navPop(); }
-            });
-
-            content.addEventListener("click", (ev) => {
-                if (ev.target.closest("#pairSubmit")) { doPairSubmit(); return; }
-
-                const revoke = ev.target.closest("[data-revoke]");
-                if (revoke) { revokeDevice(revoke.dataset.revoke); return; }
-
-                const category = ev.target.closest("[data-category]");
-                if (category) { navCategory(category.dataset.category); return; }
-
-                const nav = ev.target.closest("[data-nav]");
-                if (nav) { navPush(nav.dataset.nav); return; }
-
-                const action = ev.target.closest("[data-action]");
-                if (action && action.tagName !== "INPUT") {
-                    handleAction(
-                        action.dataset.target,
-                        action.dataset.action,
-                        action.dataset.confirm === "1"
-                    );
-                }
-            });
-
-            content.addEventListener("keydown", (ev) => {
-                if (ev.key === "Enter" && (ev.target.id === "pairCode" || ev.target.id === "pairName")) {
-                    ev.preventDefault();
-                    doPairSubmit();
-                }
-            });
-
-            content.addEventListener("input", (ev) => {
-                if (ev.target.id === "pairCode") { pairCodeDraft = ev.target.value; return; }
-                if (ev.target.id === "pairName") { pairNameDraft = ev.target.value; return; }
-                if (ev.target.id === "appSearch") {
-                    installedQuery = ev.target.value;
-                    renderAppList();
-                    return;
-                }
-                if (ev.target.id === "youtubeSearch") {
-                    youtubeQuery = ev.target.value;
-                    youtubeResults = youtubeQuery.trim() ? null : [];
-                    youtubeError = "";
-                    renderYoutubeResults();
-                    if (youtubeQuery.trim()) {
-                        clearTimeout(youtubeSearchTimeout);
-                        youtubeSearchTimeout = setTimeout(fetchYoutubeResults, 600);
-                    }
-                    return;
-                }
-                const slider = ev.target.closest('input[type="range"][data-action]');
-                if (slider) handleSliderChange(slider);
-            });
-        }
+        // --- youtube ---------------------------------------------------------------
 
         function youtubeTarget() {
             if (!state || !state.targets) return null;
@@ -1342,28 +2336,37 @@
                 html += `<span class="banner-text">${escapeHtml(notice)}</span>`;
                 const fix = (target.actions || []).find(a => a && a.id === "fix_autoplay");
                 if (fix) {
-                    html += `<div class="list-item action danger"
+                    html += `<button class="abtn danger full"
                         data-target="${escapeAttr(target.id)}" data-action="${escapeAttr(fix.id)}"
-                        data-confirm="1">`;
-                    html += `<span class="list-item-label">${escapeHtml(fix.label)}</span>`;
-                    html += `</div>`;
+                        data-confirm="1">${escapeHtml(fix.label)}</button>`;
                 }
                 html += '</div>';
             }
 
-            html += '<div class="search-bar">';
-            html += `<input type="search" id="youtubeSearch" placeholder="Search YouTube"
-                autocomplete="off" autocapitalize="off" spellcheck="false"
-                value="${escapeAttr(youtubeQuery)}">`;
-            html += '</div><div id="youtubeList"></div>';
+            html += searchHtml("youtubeSearch", "Search YouTube", youtubeQuery);
+
+            // Watching one video and wanting the next one is the commonest
+            // thing anyone does on YouTube, and typing a search for it from the
+            // couch is exactly the friction this screen exists to remove.
+            html += `<div class="card">${rowHtml({
+                icon: "⏭", title: "Up next",
+                sub: "from what's playing", related: true,
+            })}</div>`;
+
+            html += '<div id="youtubeList"></div>';
             el.innerHTML = html;
             renderYoutubeResults();
-            if (youtubeQuery.trim() && youtubeResults === null) fetchYoutubeResults();
+            if (youtubeQuery.trim() && youtubeResults === null && !youtubeSearching) fetchYoutubeResults();
         }
 
         function renderYoutubeResults() {
             const list = document.getElementById("youtubeList");
             if (!list) return;
+
+            if (youtubeSearching) {
+                list.innerHTML = '<div class="empty">Searching…</div>';
+                return;
+            }
 
             if (youtubeError) {
                 list.innerHTML = `<div class="empty">${escapeHtml(youtubeError)}</div>`;
@@ -1372,34 +2375,38 @@
 
             if (youtubeResults === null) {
                 list.innerHTML = youtubeQuery.trim()
-                    ? '<div class="empty">Searching...</div>'
-                    : '<div class="empty">Type to search YouTube</div>';
+                    ? '<div class="empty">Searching…</div>'
+                    : '<div class="empty">Type to search, or tap Up next.</div>';
                 return;
             }
 
             if (!youtubeResults.length) {
-                list.innerHTML = '<div class="empty">No videos found</div>';
+                list.innerHTML = '<div class="empty">No videos found.</div>';
                 return;
             }
 
-            let html = "";
-            youtubeResults.forEach((video, idx) => {
+            let rows = "";
+            youtubeResults.forEach(video => {
                 const mins = Math.floor(video.duration / 60);
                 const secs = video.duration % 60;
                 const dur = mins ? `${mins}:${String(secs).padStart(2, "0")}` : `${secs}s`;
-                html += `<div class="list-item action" data-target="youtube:${escapeAttr(video.url)}" data-action="play">`;
-                html += `<span class="list-item-label">${escapeHtml(video.title)}</span>`;
-                html += `<span class="list-item-value">${escapeHtml(video.channel)} · ${dur}</span>`;
-                html += `</div>`;
+                rows += rowHtml({
+                    icon: "▶",
+                    title: video.title,
+                    sub: `${video.channel} · ${dur}`,
+                    target: `youtube:${video.url}`,
+                    action: "play",
+                });
             });
-            list.innerHTML = html;
+            list.innerHTML = `<div class="section"><div class="card">${rows}</div></div>`;
         }
 
         // === Pairing ===
         function renderPairing() {
             const el = document.getElementById("content");
-            const breadcrumb = document.getElementById("breadcrumb");
-            breadcrumb.classList.add("hidden");
+            document.getElementById("app").classList.add("no-chrome");
+            document.getElementById("backBtn").classList.add("hidden");
+            document.getElementById("viewTitle").textContent = "VoiceTalk";
             updateStatus(false);
 
             let html = '<div class="pair">';
@@ -1437,12 +2444,10 @@
 
         // === Devices ===
         function renderDevices(el) {
-            let html = '';
             if (devicesList === null) {
-                html = devicesError
+                el.innerHTML = devicesError
                     ? `<div class="empty">${escapeHtml(devicesError)}</div>`
-                    : '<div class="empty">Loading...</div>';
-                el.innerHTML = html;
+                    : '<div class="empty">Loading…</div>';
                 if (!devicesError) fetchDevices();
                 return;
             }
@@ -1450,18 +2455,20 @@
                 el.innerHTML = '<div class="empty">No paired devices.</div>';
                 return;
             }
+            let rows = "";
             devicesList.forEach(d => {
                 const isCurrent = d.id === currentDeviceId;
                 const seen = d.last_seen ? relativeTime(d.last_seen) : "never";
-                const where = d.last_ip ? ` · ${escapeHtml(d.last_ip)}` : "";
-                html += '<div class="list-item">';
-                html += `<span class="list-item-label${isCurrent ? " device-current" : ""}">` +
-                        `${escapeHtml(d.name)}${isCurrent ? " (this device)" : ""}` +
-                        `<br><span class="list-item-value wrap">last seen ${escapeHtml(seen)}${where}</span></span>`;
-                html += `<button class="revoke" data-revoke="${escapeAttr(d.id)}">Revoke</button>`;
-                html += '</div>';
+                const where = d.last_ip ? ` · ${d.last_ip}` : "";
+                rows += rowHtml({
+                    icon: isCurrent ? "📱" : "🔑",
+                    title: d.name + (isCurrent ? " (this device)" : ""),
+                    sub: `last seen ${seen}${where}`,
+                    revoke: d.id,
+                    extraClass: isCurrent ? "device-current" : "",
+                });
             });
-            el.innerHTML = html;
+            el.innerHTML = `<div class="card">${rows}</div>`;
         }
 
         async function fetchDevices() {
@@ -1521,8 +2528,232 @@
             return `${Math.floor(delta / 86400)} d ago`;
         }
 
-        function capitalize(s) {
-            return s.charAt(0).toUpperCase() + s.slice(1);
+        // === Input handling ===
+
+        let sliderTimeout = null;
+        let youtubeSearchTimeout = null;
+
+        function handleSliderChange(input) {
+            const targetId = input.dataset.target;
+            const actionId = input.dataset.action;
+            const value = input.value;
+            // Paint the new value immediately; the server confirms a beat later.
+            const pct = Math.round(parseFloat(value) * 100);
+            const row = input.closest(".slider-row");
+            const label = row ? row.querySelector(".slider-value") : null;
+            if (label) label.textContent = pct + '%';
+
+            // Freeze re-renders while dragging so the thumb stays put.
+            holdRender(900);
+
+            clearTimeout(sliderTimeout);
+            sliderTimeout = setTimeout(() => {
+                doAction(targetId, actionId, parseFloat(value), {silent: true});
+                // Keep holding past the round trip: the next poll may still
+                // carry the pre-change reading and would snap the thumb back.
+                holdRender(900);
+            }, 120);
+        }
+
+        function actionLabel(targetId, actionId) {
+            const target = findTarget(targetId);
+            const action = findAction(target, actionId);
+            return action ? action.label : "";
+        }
+
+        function handleAction(targetId, actionId, isConfirm) {
+            buzz(8);
+            if (isConfirm) {
+                currentConfirm = {targetId, actionId};
+                // "Confirm this action?" gave no way to tell Close from a
+                // browser restart -- name the action, and the thing it lands
+                // on: the sheet that gave that away is gone by now.
+                const label = actionLabel(targetId, actionId);
+                const target = findTarget(targetId);
+                document.getElementById("confirmText").textContent =
+                    label ? `${label}?` : "Confirm this action?";
+                const subEl = document.getElementById("confirmSub");
+                subEl.textContent = target ? target.title : "";
+                subEl.classList.toggle("hidden", !target || !target.title);
+                document.getElementById("confirmOverlay").classList.remove("hidden");
+                return;
+            }
+            const label = actionLabel(targetId, actionId);
+            if (actionId === "launch" || actionId === "play") {
+                // Silent: a launch changes nothing this view shows, and a
+                // re-render would wipe the search box. The toast is the
+                // feedback instead.
+                doAction(targetId, actionId, undefined, {
+                    silent: true, notice: true, label: label ? label + "…" : "Opening…",
+                });
+                return;
+            }
+            doAction(targetId, actionId).then(refreshSheet);
+        }
+
+        function doConfirm() {
+            if (currentConfirm) {
+                // Confirmed actions are the consequential ones -- a close, a
+                // quit, a browser restart. Showing what came back is how the
+                // user knows it happened without checking the PC.
+                doAction(currentConfirm.targetId, currentConfirm.actionId, undefined,
+                         {notice: true, label: actionLabel(currentConfirm.targetId, currentConfirm.actionId)})
+                    .then(refreshSheet);
+                cancelConfirm();
+            }
+        }
+
+        function cancelConfirm() {
+            currentConfirm = null;
+            document.getElementById("confirmOverlay").classList.add("hidden");
+        }
+
+        function setSearchValue(id, value) {
+            const input = document.getElementById(id);
+            if (input) input.value = value;
+            const clear = document.querySelector(`[data-clear="${id}"]`);
+            if (clear) clear.classList.toggle("hidden", !value);
+        }
+
+        function onSearchInput(id, value) {
+            const clear = document.querySelector(`[data-clear="${id}"]`);
+            if (clear) clear.classList.toggle("hidden", !value);
+            if (id === "homeSearch") {
+                homeQuery = value;
+                lastSignature = viewSignature();
+                renderHomeResults();
+            } else if (id === "appSearch") {
+                installedQuery = value;
+                renderAppList();
+            } else if (id === "youtubeSearch") {
+                youtubeQuery = value;
+                youtubeResults = value.trim() ? null : [];
+                youtubeError = "";
+                renderYoutubeResults();
+                if (value.trim()) {
+                    clearTimeout(youtubeSearchTimeout);
+                    youtubeSearchTimeout = setTimeout(fetchYoutubeResults, 600);
+                }
+            }
+        }
+
+        // Handlers are delegated rather than inlined into onclick=. An inline
+        // handler puts data in two parsers at once -- the HTML attribute parser
+        // decodes entities before JS sees the string -- so no single escape is
+        // correct there. Data attributes have exactly one parser.
+        function bindDelegatedHandlers() {
+            const content = document.getElementById("content");
+
+            document.getElementById("confirmCancel").addEventListener("click", cancelConfirm);
+            document.getElementById("confirmOk").addEventListener("click", doConfirm);
+            document.getElementById("backBtn").addEventListener("click", navPop);
+
+            document.getElementById("tabbar").addEventListener("click", (ev) => {
+                const tabBtn = ev.target.closest("[data-tab]");
+                if (tabBtn) { buzz(5); setTab(tabBtn.dataset.tab); }
+            });
+
+            document.getElementById("sheetOverlay").addEventListener("click", (ev) => {
+                if (ev.target.id === "sheetOverlay") closeSheet();
+            });
+
+            const clickHandler = (ev) => {
+                if (ev.target.closest("#pairSubmit")) { doPairSubmit(); return; }
+
+                const clear = ev.target.closest("[data-clear]");
+                if (clear) {
+                    setSearchValue(clear.dataset.clear, "");
+                    onSearchInput(clear.dataset.clear, "");
+                    const input = document.getElementById(clear.dataset.clear);
+                    if (input) input.focus();
+                    return;
+                }
+
+                const revoke = ev.target.closest("[data-revoke]");
+                if (revoke) { revokeDevice(revoke.dataset.revoke); return; }
+
+                const more = ev.target.closest("[data-more]");
+                if (more) { buzz(5); openSheet(more.dataset.more); return; }
+
+                const ytSearch = ev.target.closest("[data-yt-search]");
+                if (ytSearch) {
+                    // Carry the query across rather than handing back an empty
+                    // search box: retyping it is the tax this row exists to skip.
+                    youtubeQuery = homeQuery.trim();
+                    youtubeResults = null;
+                    youtubeError = "";
+                    buzz(8);
+                    navPush("youtube:search");
+                    fetchYoutubeResults();
+                    return;
+                }
+
+                const related = ev.target.closest("[data-yt-related]");
+                if (related) {
+                    buzz(8);
+                    if (!isYoutubeView()) navPush("youtube:search");
+                    fetchYoutubeRelated();
+                    return;
+                }
+
+                const filter = ev.target.closest("[data-filter]");
+                if (filter) { appsFilter = filter.dataset.filter; lastSignature = null; render(); return; }
+
+                const action = ev.target.closest("[data-action]");
+                if (action && action.tagName !== "INPUT" && action.dataset.target) {
+                    if (ev.currentTarget.id === "sheetBody") closeSheet();
+                    handleAction(action.dataset.target, action.dataset.action,
+                                 action.dataset.confirm === "1");
+                    return;
+                }
+
+                const tabBtn = ev.target.closest("[data-tab]");
+                if (tabBtn) { setTab(tabBtn.dataset.tab); return; }
+
+                const category = ev.target.closest("[data-category]");
+                if (category && category.dataset.category) { navCategory(category.dataset.category); return; }
+
+                const navEl = ev.target.closest("[data-nav]");
+                if (navEl) { navPush(navEl.dataset.nav); return; }
+            };
+
+            content.addEventListener("click", clickHandler);
+            document.getElementById("sheetBody").addEventListener("click", clickHandler);
+
+            const keyHandler = (ev) => {
+                if (ev.key === "Enter" && (ev.target.id === "pairCode" || ev.target.id === "pairName")) {
+                    ev.preventDefault();
+                    doPairSubmit();
+                }
+                if (ev.key === "Enter" && ev.target.id === "youtubeSearch") {
+                    ev.preventDefault();
+                    ev.target.blur();
+                    clearTimeout(youtubeSearchTimeout);
+                    fetchYoutubeResults();
+                }
+            };
+            content.addEventListener("keydown", keyHandler);
+
+            const inputHandler = (ev) => {
+                if (ev.target.id === "pairCode") { pairCodeDraft = ev.target.value; return; }
+                if (ev.target.id === "pairName") { pairNameDraft = ev.target.value; return; }
+                if (ev.target.type === "search") { onSearchInput(ev.target.id, ev.target.value); return; }
+                const slider = ev.target.closest('input[type="range"][data-action]');
+                if (slider) handleSliderChange(slider);
+            };
+            content.addEventListener("input", inputHandler);
+            document.getElementById("sheetBody").addEventListener("input", inputHandler);
+
+            document.addEventListener("keydown", (ev) => {
+                if (ev.key !== "Escape") return;
+                if (!document.getElementById("confirmOverlay").classList.contains("hidden")) {
+                    cancelConfirm();
+                } else if (!document.getElementById("sheetOverlay").classList.contains("hidden")) {
+                    closeSheet();
+                } else if (navStack.length) {
+                    navPop();
+                }
+            });
         }
 
         // === Startup ===
@@ -1532,6 +2763,7 @@
         // limiter its own lockout.
         initAuth();
         bindDelegatedHandlers();
+        render();
         bootstrap();
     </script>
 </body>

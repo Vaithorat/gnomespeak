@@ -32,7 +32,7 @@ from vt.auth import (
     resolve_client_ip,
 )
 from vt.sources.apps import get_installed_targets
-from vt.sources.youtube import search as search_youtube
+from vt.sources.youtube import related_videos, search as search_youtube
 from vt.state import get_snapshot
 from vt.model import Snapshot
 
@@ -475,6 +475,20 @@ class VoiceTalkServer:
         results, err = await self._run_blocking(search_youtube, query, 15)
         return web.json_response({"results": results, "error": err})
 
+    async def handle_api_related(self, request: web.Request) -> web.Response:
+        """GET /api/youtube/related — what to watch after the current video.
+
+        The URL is optional: with none, the video open in the browser is used,
+        because not having to know what is playing is the point of the feature.
+        """
+        _, error = self._authorize(request)
+        if error is not None:
+            return error
+
+        url = request.query.get("url", "").strip()
+        results, err = await self._run_blocking(related_videos, url, 15)
+        return web.json_response({"results": results, "error": err})
+
     async def handle_api_do(self, request: web.Request) -> web.Response:
         """POST /api/do — execute an action."""
         principal, error = self._authorize(request)
@@ -528,6 +542,7 @@ class VoiceTalkServer:
         app.router.add_get("/api/state", self.handle_api_state)
         app.router.add_get("/api/apps", self.handle_api_apps)
         app.router.add_get("/api/youtube", self.handle_api_youtube)
+        app.router.add_get("/api/youtube/related", self.handle_api_related)
         app.router.add_post("/api/do", self.handle_api_do)
         return app
 
@@ -669,6 +684,13 @@ class VoiceTalkServer:
                     await asyncio.wait_for(tunnel_proc.wait(), timeout=5)
                 except (asyncio.TimeoutError, ProcessLookupError):
                     pass
+            if self.tunnel and not self.tunnel_name:
+                # A quick tunnel's hostname dies with the process. Leaving it on
+                # disk would have `vt pair` keep minting links for a name that no
+                # longer resolves. A named tunnel's hostname outlives the run, so
+                # that one is left alone.
+                from vt.tunnel import clear_public_url
+                clear_public_url()
             await runner.cleanup()
             self._worker.shutdown(wait=False)
 

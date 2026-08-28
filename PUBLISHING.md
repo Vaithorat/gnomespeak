@@ -1,6 +1,6 @@
-# Publishing VoiceTalk to PyPI
+# Publishing GnomeSpeak to PyPI
 
-This guide explains how to publish VoiceTalk to the Python Package Index (PyPI).
+This guide explains how to publish GnomeSpeak to the Python Package Index (PyPI).
 
 ## Prerequisites
 
@@ -25,9 +25,9 @@ This is more secure than API tokens and requires no secrets:
 1. Go to https://pypi.org/account/publishing/
 2. Click "Add a new pending publisher"
 3. Fill in:
-   - **PyPI Project Name**: `voicetalk`
+   - **PyPI Project Name**: `gnomespeak`
    - **GitHub Repository Owner**: `Vaithorat`
-   - **GitHub Repository Name**: `voicetalk`
+   - **GitHub Repository Name**: `gnomespeak`
    - **GitHub Workflow Name**: `publish.yml`
    - **GitHub Environment Name**: `pypi`
 4. Click "Add"
@@ -59,10 +59,10 @@ Alternatively, if you prefer API tokens:
    ```
 
 3. **Create a GitHub release**
-   - Go to https://github.com/Vaithorat/voicetalk/releases
+   - Go to https://github.com/Vaithorat/gnomespeak/releases
    - Click "Draft a new release"
    - Tag: select the tag you just created (e.g., `v3.1.0`)
-   - Title: `VoiceTalk v3.1.0`
+   - Title: `GnomeSpeak v3.1.0`
    - Description: Write release notes
    - Click "Publish release"
 
@@ -92,10 +92,10 @@ The GitHub Actions workflow (`.github/workflows/publish.yml`) will automatically
 After publishing, verify the package is live:
 
 ```bash
-pip install --upgrade voicetalk
+pip install --upgrade gnomespeak
 ```
 
-Check PyPI: https://pypi.org/project/voicetalk/
+Check PyPI: https://pypi.org/project/gnomespeak/
 
 ## Versioning
 
@@ -134,5 +134,5 @@ Before publishing to PyPI, test on TestPyPI:
 3. Create a release on GitHub
 4. After it's published to TestPyPI (not PyPI), test:
    ```bash
-   pip install -i https://test.pypi.org/simple/ voicetalk==3.1.0rc1
+   pip install -i https://test.pypi.org/simple/ gnomespeak==3.1.0rc1
    ```

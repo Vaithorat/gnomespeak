@@ -1,0 +1,9 @@
+{
+  "name": "GnomeSpeak",
+  "description": "Window, workspace and keystroke control for GnomeSpeak remote",
+  "version": "3.3.0",
+  "uuid": "gnomespeak@local",
+  "shell-version": [
+    "50"
+  ]
+}

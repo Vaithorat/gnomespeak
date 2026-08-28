@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# VoiceTalk installer — Install system deps and Python package in one command
+# GnomeSpeak installer — Install system deps and Python package in one command
 
 set -e
 
-echo "🚀 VoiceTalk Installer"
+echo "🚀 GnomeSpeak Installer"
 echo ""
 
 # Detect distro
@@ -21,14 +21,14 @@ fi
 echo "📦 Installing system dependencies..."
 if [ "$DISTRO" = "debian" ]; then
     sudo apt-get update -qq
-    sudo apt-get install -y -qq python3-dbus python3-gi
+    sudo apt-get install -y -qq python3-dbus python3-gi xdotool wmctrl
 elif [ "$DISTRO" = "redhat" ]; then
-    sudo dnf install -y -q python3-dbus python3-gi
+    sudo dnf install -y -q python3-dbus python3-gi xdotool wmctrl
 fi
 
 # Install Python package
-echo "📥 Installing VoiceTalk from PyPI..."
-pip install voicetalk
+echo "📥 Installing GnomeSpeak from PyPI..."
+pip install gnomespeak
 
 echo ""
 echo "✅ Installation complete!"

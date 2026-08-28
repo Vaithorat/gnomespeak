@@ -10,6 +10,7 @@ import shlex
 import time
 from pathlib import Path
 from vt.model import Target, Action
+from vt.sources.steam import get_steam_targets
 
 try:
     import psutil
@@ -242,6 +243,12 @@ def get_installed_targets(query: str = "") -> list[Target]:
     """
     tokens = _tokens(query)
     targets: list[Target] = []
+
+    # Steam writes .desktop files only for games the user asked for a shortcut
+    # to, so the library has to be read from Steam's own manifests. They belong
+    # in this list rather than a screen of their own: from the phone, starting
+    # a game and starting an application are the same gesture.
+    targets.extend(get_steam_targets(query))
 
     for entry in get_installed_index().values():
         # Terminal=true entries are CLI tools that need a terminal emulator to

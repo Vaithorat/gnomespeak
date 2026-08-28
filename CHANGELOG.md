@@ -1,5 +1,47 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **Wayland YouTube playback keys** — play/pause, 10s seek, volume, mute,
+  **fullscreen** and close tab now work under Wayland. They are delivered
+  through the GNOME extension (the only route the compositor allows) instead
+  of `xdotool`, which stays as a fallback for non-GNOME X11 sessions.
+  The tab is found by window title, or through Firefox's session store when
+  the video is parked in a background tab.
+- **Window state and workspaces** — minimize, restore, maximize, unmaximize,
+  move a window to another workspace, and switch workspaces from the phone.
+  New extension methods: `Minimize`, `Unminimize`, `Maximize`, `Unmaximize`,
+  `MoveToWorkspace`, `SwitchWorkspace`, `Workspaces`.
+- **Bluetooth** (`sources/bluetooth.py`) — turn the radio on and off, and
+  connect or disconnect paired devices, over BlueZ on the system bus. Pairing
+  a *new* device is deliberately out of scope: it needs an agent to answer a
+  PIN prompt that the phone cannot see.
+- **System control** (`sources/system.py`) — lock, suspend, restart, shut down
+  (the last two `confirm` actions), screen brightness as a slider and steps,
+  do-not-disturb, and battery charge/state/time-remaining.
+- **Streaming shortcuts** (`sources/streaming.py`) — one tap for Netflix,
+  Spotify, Prime Video, Disney+, JioHotstar, Twitch, Max and YouTube. Prefers
+  an installed desktop app, falls back to the browser, and says which it will
+  do. Overridable in `~/.config/gnomespeak/streaming.toml`.
+- **Steam games** (`sources/steam.py`) — installed games read from Steam's own
+  library manifests (including libraries on other drives), filtered to what is
+  fully installed and not a runtime, launched via `steam://rungameid/`. They
+  appear in the existing app search rather than the 1 Hz snapshot.
+- **"Up next"** — `GET /api/youtube/related` and a button on the YouTube
+  screen return what to watch after the video already playing, with no need to
+  say which one that is. Falls back to searching the current title when
+  yt-dlp exposes no related list.
+- **`vt doctor` detects a stale extension** — a Shell extension only reloads on
+  log out, so an updated checkout can sit on disk while the old build keeps
+  serving. Doctor now probes for the newest method and says to log out.
+
+### Fixed
+- **Battery time on a full battery** — UPower keeps reporting a `TimeToEmpty`
+  when the battery is full (8391600 seconds on the development machine), which
+  rendered as "100% · full · 2331h left". Only a charging or discharging
+  battery gets a countdown now.
+
 ## [3.1.0] — 2026-08-23
 
 ### Added
@@ -20,7 +62,7 @@
 - **Rate limiting** — 5 failed auth attempts per IP triggers a 15-minute
   lockout. Pairing attempts rate-limited globally (30/hour).
 - **Audit log** — every authenticated action and rejected attempt recorded
-  in `~/.local/state/voicetalk/audit.log` as JSONL.
+  in `~/.local/state/gnomespeak/audit.log` as JSONL.
 - **New API endpoints** — `/api/session`, `/api/pair`, `/api/pair/self`,
   `/api/devices`, `/api/devices/revoke`.
 
@@ -33,8 +75,8 @@
 
 ## [3.0.0] — 2026-08-23
 
-Complete rewrite. VoiceTalk was a Windows-only Python server with a
-CustomTkinter GUI plus a React Native Android app; it is now a Linux CLI
+Complete rewrite. Previously a Windows-only Python server with a
+CustomTkinter GUI plus a React Native Android app; now a Linux CLI
 (`vt`) that serves a self-contained web UI to any browser on the LAN.
 
 ### Removed
@@ -64,7 +106,7 @@ CustomTkinter GUI plus a React Native Android app; it is now a Linux CLI
   title, channel, and duration. Tap a result to open it.
 - **YouTube playback control** — appears only on X11, where `xdotool` and
   `wmctrl` can synthesise keystrokes.
-- **Pre-configured commands** — `~/.config/voicetalk/commands.toml`, where `run`
+- **Pre-configured commands** — `~/.config/gnomespeak/commands.toml`, where `run`
   is always an argv list and never a shell string, validated on startup.
 - **`vt allow-autoplay`** — sets `media.autoplay.default` in the Firefox
   profile's `user.js` (the same setting as Settings → Privacy & Security →
@@ -235,7 +277,7 @@ CustomTkinter GUI plus a React Native Android app; it is now a Linux CLI
 ## [1.0.0] — 2026-07-11
 
 ### Added
-- Initial project structure with `server/` (Python) and `client/` (React Native)
+- Initial GnomeSpeak project structure with `server/` (Python) and `client/` (React Native)
 - WebSocket communication with auto-reconnect, heartbeat pings, and exponential backoff
 - On-device Android STT via `@react-native-voice/voice` with `PermissionsAndroid`
 - OpenAI GPT-3.5 intent parsing with rule-based regex fallback

@@ -73,11 +73,11 @@ dependency costs you one section of the UI, not the server.
 | `sources/apps.py` | Installed apps (`/api/apps`, not the snapshot) | — |
 | `sources/youtube.py` | YouTube search results (`/api/youtube`, not the snapshot) | `yt-dlp` |
 | `sources/audio.py` | Default sink volume and mute | `wpctl` (PipeWire) |
-| `commands.py` | User-defined commands | `~/.config/voicetalk/commands.toml` |
+| `commands.py` | User-defined commands | `~/.config/gnomespeak/commands.toml` |
 
 ## The GNOME extension
 
-`gnome-extension/voicetalk@local/` exports three D-Bus methods on
+`gnome-extension/gnomespeak@local/` exports three D-Bus methods on
 `org.gnome.Shell.Extensions.VoiceTalk`: `List() → JSON`, `Focus(id)`, and
 `Close(id)`. Window ids are Mutter stable sequences, which survive restacking.
 
@@ -189,7 +189,7 @@ because the URL is not a credential off-network.
 3. **Rate limiting.** 5 failed auth attempts per IP triggers a 15-minute
    lockout. Pairing attempts are rate-limited globally (30/hour).
 4. **Audit log.** Every authenticated action and rejected attempt is recorded
-   in `~/.local/state/voicetalk/audit.log` as JSONL.
+   in `~/.local/state/gnomespeak/audit.log` as JSONL.
 5. **No arbitrary execution.** `/api/do` takes a target id and an action id, not
    a command. Configured commands are addressed by id; their `run` must be an
    argv list, and a string is rejected at load time — `subprocess` is never
@@ -209,7 +209,7 @@ documented trade-off — run it on a network you trust.
 
 ## Configuration
 
-`~/.config/voicetalk/commands.toml` (or `$XDG_CONFIG_HOME/voicetalk/`):
+`~/.config/gnomespeak/commands.toml` (or `$XDG_CONFIG_HOME/gnomespeak/`):
 
 ```toml
 [[command]]

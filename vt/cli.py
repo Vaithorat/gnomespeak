@@ -14,7 +14,7 @@ def cmd_status(args):
         print("No targets found.")
         return
 
-    print(f"\nVoiceTalk — {len(snapshot.targets)} target(s)\n")
+    print(f"\nGnomeSpeak — {len(snapshot.targets)} target(s)\n")
     for target in snapshot.targets:
         icon = target.icon or "•"
         pos = ""
@@ -59,7 +59,7 @@ def cmd_commands(args):
 
     if not commands and not errors:
         print("\nNo commands configured.")
-        print("  Create ~/.config/voicetalk/commands.toml -- see commands.toml.example.\n")
+        print("  Create ~/.config/gnomespeak/commands.toml -- see commands.toml.example.\n")
         return
 
     if commands:
@@ -214,11 +214,30 @@ def cmd_doctor(args):
         import dbus
         bus = dbus.SessionBus()
         bus.get_object(
-            "org.gnome.Shell.Extensions.VoiceTalk",
-            "/org/gnome/Shell/Extensions/VoiceTalk",
+            "org.gnome.Shell.Extensions.GnomeSpeak",
+            "/org/gnome/Shell/Extensions/GnomeSpeak",
         )
-        checks.append(("✓", "Extension", "D-Bus interface active"))
-        ok_count += 1
+        # Answering the bus is not the same as being current. A Shell
+        # extension only reloads on log out, so an updated checkout can sit on
+        # disk for days while the old build keeps serving -- and every action
+        # added since then fails one at a time with nothing tying them
+        # together. Workspaces is the newest method; probe it as the version.
+        obj = bus.get_object(
+            "org.gnome.Shell.Extensions.GnomeSpeak",
+            "/org/gnome/Shell/Extensions/GnomeSpeak",
+            introspect=False,
+        )
+        interface = dbus.Interface(obj, "org.gnome.Shell.Extensions.GnomeSpeak")
+        try:
+            interface.Workspaces()
+            checks.append(("✓", "Extension", "D-Bus interface active"))
+            ok_count += 1
+        except Exception:
+            checks.append(("⚠", "Extension", "Running an older build"))
+            checks.append((" ", "", "window minimize/maximize, workspaces and"))
+            checks.append((" ", "", "YouTube keys need the current one"))
+            checks.append((" ", "", "fix: vt install-extension, then log out and back in"))
+            warn_count += 1
     except Exception:
         checks.append(("ℹ", "Extension", "Not active (optional; run 'vt install-extension')"))
         warn_count += 1
@@ -280,7 +299,7 @@ def cmd_doctor(args):
         ok_count += 1
 
     # Print results
-    print("\nVoiceTalk Preflight Check\n")
+    print("\nGnomeSpeak Preflight Check\n")
     for status, name, desc in checks:
         print(f"  {status} {name:<12} {desc}")
 
@@ -327,7 +346,7 @@ def _lan_url(port: int) -> str:
 def cmd_pair(args):
     """Issue a one-time pairing code for a new device."""
     from vt.auth import CODE_TTL, PairingCodes, format_code
-    from vt.tunnel import load_public_url
+    from vt.tunnel import clear_public_url, load_public_url, public_url_is_live
 
     codes = PairingCodes(ttl=args.minutes * 60.0 if args.minutes else CODE_TTL)
     code = codes.issue(args.label or "cli")
@@ -336,14 +355,35 @@ def cmd_pair(args):
     # characters, so it has to point at the origin the phone will actually use:
     # a device paired against the LAN address has nothing stored for the tunnel
     # hostname, because localStorage is per-origin.
-    base = (args.url or load_public_url() or _lan_url(args.port)).rstrip("/")
+    saved = load_public_url()
+    stale = ""
+    if args.url:
+        base = args.url.rstrip("/")
+    elif saved and (args.no_check or public_url_is_live(saved)):
+        base = saved
+    else:
+        # A quick tunnel's hostname is deleted the moment cloudflared stops, so
+        # a leftover one produces a QR that fails on the phone as "DNS address
+        # could not be found" -- with nothing on screen to connect that back to
+        # a tunnel that is no longer running. Say so, and fall back to the LAN.
+        stale = saved
+        if saved:
+            clear_public_url()
+        base = _lan_url(args.port)
+
     link = f"{base}/?p={code}"
     minutes = int((args.minutes * 60.0 if args.minutes else CODE_TTL) // 60)
 
     print(f"\n  Pairing code: {format_code(code)}")
     print(f"  Valid for:    {minutes} min, one device")
     print(f"  Link:         {link}")
-    if not args.url and not load_public_url():
+    if stale:
+        print(f"\n  Note: the saved tunnel URL ({stale})")
+        print("        no longer answers -- its cloudflared has stopped, and the")
+        print("        hostname is gone with it. Falling back to the LAN address.")
+        print("        Start a new one with `vt serve --tunnel`, then run `vt pair`")
+        print("        again to get a link for the new hostname.")
+    elif not args.url and not base.startswith("https://"):
         print("\n  Note: no public URL known, so this link is LAN-only.")
         print("        For remote access run `vt serve --tunnel`, or pass")
         print("        `vt pair --url https://your-tunnel.example.com`.")
@@ -512,7 +552,7 @@ def cmd_install_extension(args):
 
     try:
         # Find the extension source
-        ext_src = Path(__file__).parent.parent / "gnome-extension" / "voicetalk@local"
+        ext_src = Path(__file__).parent.parent / "gnome-extension" / "gnomespeak@local"
         if not ext_src.exists():
             print(f"✗ Extension source not found at {ext_src}")
             sys.exit(1)
@@ -522,7 +562,7 @@ def cmd_install_extension(args):
         ext_dir.mkdir(parents=True, exist_ok=True)
 
         # Symlink or copy
-        target = ext_dir / "voicetalk@local"
+        target = ext_dir / "gnomespeak@local"
         if target.exists():
             print(f"  Extension already installed at {target}")
         else:
@@ -538,14 +578,14 @@ def cmd_install_extension(args):
         # Enable the extension
         try:
             subprocess.run(
-                ["gnome-extensions", "enable", "voicetalk@local"],
+                ["gnome-extensions", "enable", "gnomespeak@local"],
                 check=True,
                 capture_output=True,
             )
             print("✓ Extension enabled")
         except subprocess.CalledProcessError:
             print("⚠ Failed to enable extension automatically.")
-            print("  Run manually: gnome-extensions enable voicetalk@local")
+            print("  Run manually: gnome-extensions enable gnomespeak@local")
 
         print()
         print("ℹ On Wayland, GNOME Shell will not reload.")
@@ -623,6 +663,10 @@ def main():
     pair_parser.add_argument("--port", type=int, default=8765, help="Port for the LAN fallback URL")
     pair_parser.add_argument("--minutes", type=int, default=10, help="Code lifetime (default: 10)")
     pair_parser.add_argument("--label", help="Note stored with the code")
+    pair_parser.add_argument(
+        "--no-check", action="store_true",
+        help="Skip the reachability check on the saved tunnel URL",
+    )
 
     # devices
     devices_parser = subparsers.add_parser("devices", help="List or revoke paired devices")

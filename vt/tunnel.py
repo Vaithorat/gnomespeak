@@ -94,13 +94,14 @@ def save_public_url(url: str):
     working pairing link without being told it again."""
     import json
     import os
+    import time
     path = _remote_file()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(path.name + ".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"public_url": url}, f)
+            json.dump({"public_url": url, "saved_at": time.time()}, f)
         os.replace(tmp, path)
     except OSError:
         pass
@@ -112,3 +113,41 @@ def load_public_url() -> str:
         return str(json.loads(_remote_file().read_text()).get("public_url") or "")
     except (OSError, ValueError):
         return ""
+
+
+def clear_public_url():
+    """Forget the tunnel URL when the tunnel goes down.
+
+    A quick tunnel's hostname dies with the cloudflared process, so leaving it
+    on disk is worse than having nothing: `vt pair` would keep minting links
+    for a hostname that no longer resolves, and the phone reports that as a DNS
+    failure with nothing to say it was ever ours.
+    """
+    try:
+        _remote_file().unlink()
+    except OSError:
+        pass
+
+
+def public_url_is_live(url: str, timeout: float = 4.0) -> bool:
+    """Whether anything still answers at this hostname.
+
+    Cleanup on shutdown cannot be relied on -- a SIGKILL, a crash or a reboot
+    all leave the file behind -- so the URL is checked before it is handed to a
+    phone. Any HTTP reply counts, including a 502: that means the tunnel is up
+    and only the local server is missing, which is a different problem with a
+    different fix. Only a name that will not resolve, or a connection that will
+    not open, counts as dead.
+    """
+    import urllib.error
+    import urllib.request
+
+    if not url:
+        return False
+    try:
+        urllib.request.urlopen(url, timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
