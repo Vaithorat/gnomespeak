@@ -387,6 +387,9 @@ def test_youtube_tab_found_by_window_title(monkeypatch):
     """
     from vt.sources import youtube_player
 
+    if youtube_player.dbus is None:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
+
     monkeypatch.setattr(youtube_player, "list_windows", lambda: [
         {"id": 7, "title": "Never Gonna Give You Up - YouTube — Mozilla Firefox",
          "wm_class": "firefox"},
@@ -418,6 +421,9 @@ def test_youtube_tab_found_in_a_background_tab(monkeypatch):
     """A video parked behind other tabs still has to be reachable."""
     from vt.sources import youtube_player
 
+    if youtube_player.dbus is None:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
+
     monkeypatch.setattr(youtube_player, "list_windows", lambda: [
         {"id": 4, "title": "Inbox — Mozilla Firefox", "wm_class": "firefox"},
     ])
@@ -440,6 +446,9 @@ def test_youtube_tab_found_in_a_background_tab(monkeypatch):
 def test_youtube_keys_go_through_the_extension(monkeypatch):
     """On Wayland the extension is the only route, so the chord must reach it."""
     from vt.sources import youtube_player
+
+    if youtube_player.dbus is None:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
 
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
     monkeypatch.setattr(

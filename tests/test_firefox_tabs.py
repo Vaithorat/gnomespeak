@@ -242,6 +242,8 @@ class _FakeShell:
 
 @pytest.fixture
 def shell(monkeypatch):
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
     fake = _FakeShell()
     monkeypatch.setattr(actions, "_shell_interface", lambda: fake)
     return fake

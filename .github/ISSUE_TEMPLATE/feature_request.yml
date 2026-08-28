@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest something GnomeSpeak should do
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: What are you trying to do from the phone that you can't do today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: What would you want to see/tap, and what should happen?
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you're using now (e.g. a pre-configured command in `commands.toml`)?
+    validations:
+      required: false

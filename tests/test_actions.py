@@ -225,6 +225,8 @@ def test_keystroke_control_needs_the_extension_on_wayland(monkeypatch):
     The extension is the supported route there; with no tab reachable through
     it the failure has to name that, not just restate that xdotool is out.
     """
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the extension-absent message")
     from vt.sources import youtube_player
 
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")

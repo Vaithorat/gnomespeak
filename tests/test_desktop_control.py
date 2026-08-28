@@ -190,6 +190,8 @@ def test_the_active_workspace_has_no_switch_button(monkeypatch):
 
 
 def test_switching_past_the_last_workspace_is_refused(monkeypatch):
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the bounds check")
     monkeypatch.setattr(workspaces, "workspace_info", lambda: {"count": 2, "active": 0})
     result = workspaces.execute("5", "switch")
     assert result["ok"] is False
@@ -197,6 +199,8 @@ def test_switching_past_the_last_workspace_is_refused(monkeypatch):
 
 
 def test_workspace_switch_calls_the_extension(monkeypatch):
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
     monkeypatch.setattr(workspaces, "workspace_info", lambda: {"count": 3, "active": 0})
 
     calls = []
@@ -214,6 +218,8 @@ def test_workspace_switch_calls_the_extension(monkeypatch):
 
 
 def test_workspace_without_the_extension_says_so(monkeypatch):
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the extension-absent message")
     monkeypatch.setattr(workspaces, "workspace_info", dict)
     result = workspaces.execute("1", "switch")
     assert result["ok"] is False
@@ -302,6 +308,8 @@ def test_unknown_system_target_is_named():
 
 def test_new_kinds_reach_their_sources(monkeypatch):
     """execute_action routes by target kind; a missing branch is a dead button."""
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
     monkeypatch.setattr(workspaces, "workspace_info", lambda: {"count": 2, "active": 0})
 
     seen = []
@@ -376,6 +384,8 @@ def _unknown_method(name):
 
 @pytest.fixture
 def shell(monkeypatch):
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
     fake = _FakeShell()
     monkeypatch.setattr(actions, "_shell_interface", lambda: fake)
     return fake
@@ -415,6 +425,8 @@ def test_an_older_extension_is_told_apart_from_a_broken_one(monkeypatch):
     Reporting that as a generic D-Bus error sends people to reinstall something
     that is already installed, instead of reloading what they just updated.
     """
+    if not actions.HAS_DBUS:
+        pytest.skip("python-dbus is required to reach the mocked extension call")
     monkeypatch.setattr(actions, "_shell_interface",
                         lambda: _FakeShell(missing={"Minimize"}))
 

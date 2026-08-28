@@ -1,5 +1,10 @@
 # GnomeSpeak — Linux CLI + Web Remote
 
+[![CI](https://github.com/Vaithorat/gnomespeak/actions/workflows/ci.yml/badge.svg)](https://github.com/Vaithorat/gnomespeak/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/gnomespeak)](https://pypi.org/project/gnomespeak/)
+[![Python](https://img.shields.io/pypi/pyversions/gnomespeak)](https://pypi.org/project/gnomespeak/)
+[![License: MIT](https://img.shields.io/github/license/Vaithorat/gnomespeak)](LICENSE)
+
 Control your Linux PC from your phone via a simple web interface. See what's playing, what's open, what apps are running — and control it all with a dropdown of concrete actions. No app installs, no voice, no AI guessing. Just you, your PC state, and pre-configured commands.
 
 ## Features
@@ -406,7 +411,7 @@ If two terminals still disagree, run `make env` in both and compare the
 
 ## License
 
-MIT (see LICENSE file, coming soon)
+MIT (see [LICENSE](LICENSE))
 
 ## Acknowledgments
 
