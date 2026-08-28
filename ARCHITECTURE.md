@@ -68,7 +68,7 @@ dependency costs you one section of the UI, not the server.
 | Source | Reads | Requires |
 | --- | --- | --- |
 | `sources/mpris.py` | Players, metadata, position, capabilities | `python3-dbus` |
-| `sources/windows.py` | Open windows on the active workspace | GNOME extension |
+| `sources/windows.py` | Open windows on the active workspace | GNOME extension, or `sources/cosmic_windows.py` |
 | `sources/apps.py` | Running apps, matched to `.desktop` entries | `psutil` |
 | `sources/apps.py` | Installed apps (`/api/apps`, not the snapshot) | — |
 | `sources/youtube.py` | YouTube search results (`/api/youtube`, not the snapshot) | `yt-dlp` |
@@ -94,6 +94,56 @@ Two operational notes, both learned the hard way:
   `ServiceUnknown`/`NameHasNoOwner` mean "not installed"; anything else is
   reported verbatim. Collapsing the two once hid a live `TypeError` behind
   "GNOME extension not available" and sent debugging in the wrong direction.
+
+## COSMIC window control
+
+`sources/cosmic_windows.py` is the fallback `sources/windows.py` reaches for
+when the GNOME extension isn't there. COSMIC (System76's Smithay-based
+compositor) has no in-process extension model and no D-Bus surface for window
+management (`com.system76.CosmicComp` was checked by hand -- it exposes only
+`Ei`, libei input-emulation for the remote-desktop portal, nothing for
+listing or controlling windows). So this backend speaks COSMIC's own Wayland
+protocols directly, via `pywayland` (optional dep, `gnomespeak[wayland]`):
+`ext-foreign-toplevel-list-v1` for enumeration (title, app_id, and a
+cross-connection-stable `identifier`), `cosmic-toplevel-info-unstable-v1` for
+state (minimized/maximized), and `cosmic-toplevel-management-unstable-v1` for
+control (activate/close/maximize/minimize). The bindings for these three are
+vendored, generated code under `sources/_cosmic_wayland/` -- see that
+package's docstring before touching the XML there, it explains a real
+opcode-numbering bug this project hit once from trimming the wrong thing.
+
+It differs from the GNOME extension in one structural way: **it is not
+stateless.** Creating a second `pywayland.client.Display()` in the same
+process after a prior one disconnected reliably crashed the process
+(segfault, reproduced repeatedly), so this module opens exactly one
+connection, lazily, on first use, and keeps it for the process's whole life --
+`list_windows()`/`execute()` reuse it rather than reconnecting. The one
+connection is also why a live Display left for the garbage collector at
+interpreter shutdown segfaulted too: `atexit.register`s an explicit
+`disconnect()`, which runs ahead of GC-driven finalization and doesn't.
+
+**Keystroke injection.** `SendKeys`'s equivalent here is `send_keys()`, via
+`zwp_virtual_keyboard_manager_v1` -- a standard wlroots-family protocol (not
+COSMIC-specific), confirmed on this machine's COSMIC session by a Phase 0
+spike (bind the manager, create a virtual keyboard, upload a keymap, check
+for a protocol error -- see `COSMIC_INPUT_PARITY.md`) before any real
+implementation was written. `send_keys()` activates the target toplevel, the
+same way `SendKeys` does on the GNOME side, then types a chord through the
+virtual keyboard; `sources/cosmic_input.py` owns the bundled static XKB
+keymap (`_cosmic_wayland/qwerty.xkb`, generated once with `xkbcli
+compile-keymap`, not compiled at runtime) and the small hardcoded evdev
+keycode table the project's fixed chord vocabulary needs. Unlike the
+toplevel globals, `zwp_virtual_keyboard_manager_v1` is optional to bind --
+window listing/control still works without it, only `send_keys()` fails.
+This closes the Firefox tab-switching, per-tab close, and YouTube-keys gaps
+that `windows.py`/`youtube_player.py` used to route around by checking
+`backend == "cosmic"`.
+
+Workspace listing/switching is still not implemented, though the protocol
+supports it -- see `_cosmic_wayland/__init__.py` for why the XML still
+declares it. Unlike the keystroke gap above, this needs no input injection,
+just a plain protocol call; it's independent of everything above and cheaper
+to add.
 
 ## Server
 

@@ -3,10 +3,28 @@
 ## [Unreleased]
 
 ### Added
+- **Window control on COSMIC** (`sources/cosmic_windows.py`) — Focus,
+  Minimize, Maximize, and Close now work under COSMIC (System76's compositor)
+  without the GNOME extension, by talking its own
+  `ext-foreign-toplevel-list-v1` / `cosmic-toplevel-info-unstable-v1` /
+  `cosmic-toplevel-management-unstable-v1` Wayland protocols directly.
+  New optional dependency: `pip install gnomespeak[wayland]` (a pure wheel,
+  no system package needed, unlike `dbus-python`). Workspaces still need the
+  GNOME extension and are not available on this backend yet. `vt doctor`
+  reports it under "COSMIC windows".
+- **Keystroke injection on COSMIC** (`sources/cosmic_input.py`) — Firefox
+  tab-switching, per-tab close, and YouTube playback keys (fullscreen, close
+  tab) now work on COSMIC too, the same actions the GNOME extension's
+  `SendKeys` provides there. Delivered through
+  `zwp_virtual_keyboard_manager_v1`, a standard wlroots-family protocol, with
+  a bundled static XKB keymap rather than a new `libxkbcommon` dependency.
+  See `COSMIC_INPUT_PARITY.md` for the design and the Phase 0 spike that
+  confirmed an ordinary client is allowed to do this here.
 - **Wayland YouTube playback keys** — play/pause, 10s seek, volume, mute,
   **fullscreen** and close tab now work under Wayland. They are delivered
-  through the GNOME extension (the only route the compositor allows) instead
-  of `xdotool`, which stays as a fallback for non-GNOME X11 sessions.
+  through the GNOME extension or (on COSMIC) `sources/cosmic_input.py` --
+  only the compositor may synthesise input under Wayland -- instead of
+  `xdotool`, which stays as a fallback for non-GNOME, non-COSMIC X11 sessions.
   The tab is found by window title, or through Firefox's session store when
   the video is parked in a background tab.
 - **Window state and workspaces** — minimize, restore, maximize, unmaximize,

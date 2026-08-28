@@ -242,6 +242,24 @@ def cmd_doctor(args):
         checks.append(("ℹ", "Extension", "Not active (optional; run 'vt install-extension')"))
         warn_count += 1
 
+    # Check 5b: COSMIC window control -- only relevant as a fallback, so skip
+    # it entirely when the GNOME extension above is already doing the job.
+    if not any(name == "Extension" and status == "✓" for status, name, _ in checks):
+        from vt.sources import cosmic_windows
+
+        if not cosmic_windows.available():
+            checks.append(("ℹ", "COSMIC windows", "pywayland not installed"))
+            checks.append((" ", "", "fix: pip install 'gnomespeak[wayland]'"))
+            warn_count += 1
+        else:
+            cosmic_wins = cosmic_windows.list_windows()
+            if cosmic_wins:
+                checks.append(("✓", "COSMIC windows", f"{len(cosmic_wins)} window(s) via native protocol"))
+                ok_count += 1
+            else:
+                checks.append(("ℹ", "COSMIC windows", "Not this compositor, or no windows open"))
+                warn_count += 1
+
     # Check 6: Browser autoplay. A tap on the phone that opens a paused tab
     # looks identical to one that does nothing, so this is worth stating even
     # though nothing is broken in vt itself.

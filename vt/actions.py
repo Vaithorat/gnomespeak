@@ -381,7 +381,17 @@ def execute_window_action(window_id: str, action_id: str) -> dict:
     Browser tabs are not windows -- Mutter cannot see them at all -- so a tab
     target names its parent window plus the keystrokes that select that tab
     inside the browser. See vt/sources/firefox.py.
+
+    A "cosmic:" prefix means sources/windows.py built this id from
+    sources/cosmic_windows.py instead -- COSMIC's own Wayland protocols, not
+    the GNOME extension. That module has no tab-level ids (see windows.py),
+    so this split only ever needs to happen once, before the tab regex below.
     """
+    from vt.sources.cosmic_windows import PREFIX as COSMIC_PREFIX
+    if window_id.startswith(COSMIC_PREFIX):
+        from vt.sources.cosmic_windows import execute as execute_cosmic_action
+        return execute_cosmic_action(window_id[len(COSMIC_PREFIX):], action_id)
+
     if not HAS_DBUS:
         return {"ok": False, "message": no_dbus_message()}
 

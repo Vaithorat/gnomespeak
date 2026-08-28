@@ -38,13 +38,25 @@ def shell_interface():
 
 
 def list_windows() -> list[dict]:
-    """Windows on the active workspace, or [] when the extension is absent."""
-    if not dbus:
-        return []
-    try:
-        return json.loads(shell_interface().List())
-    except Exception:
-        return []
+    """Windows on the active workspace, or [] when nothing can report them.
+
+    Tries the GNOME extension first. When that is not there -- no D-Bus, the
+    extension not installed, or a different compositor entirely -- falls back
+    to sources/cosmic_windows.py, which speaks COSMIC's own Wayland protocols
+    directly. That backend has no concept of "active workspace" (the protocol
+    it uses doesn't filter by one), so on COSMIC this returns every window on
+    every workspace.
+    """
+    if dbus:
+        try:
+            windows = json.loads(shell_interface().List())
+            if windows:
+                return windows
+        except Exception:
+            pass
+
+    from vt.sources.cosmic_windows import list_windows as cosmic_list_windows
+    return cosmic_list_windows()
 
 
 def workspace_info() -> dict:
@@ -176,12 +188,11 @@ def get_window_targets() -> list[Target]:
     session store -- the window manager only ever reports the active tab. See
     vt/sources/firefox.py for why that file is the only tab list available.
 
-    The extension is optional and may not be present or enabled.
-    This function returns [] gracefully if it is absent.
+    The extension is optional and may not be present or enabled -- and on a
+    non-GNOME compositor, list_windows() falls back to sources/cosmic_windows.py
+    instead, which needs no D-Bus at all. This function returns [] gracefully
+    if neither backend can report anything.
     """
-    if not dbus:
-        return []
-
     windows = list_windows()
     if not windows:
         return []

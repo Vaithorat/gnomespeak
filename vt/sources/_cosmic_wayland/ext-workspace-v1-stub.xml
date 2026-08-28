@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="ext_workspace_v1_stub">
+  <!--
+    Not real upstream protocol; just enough of a stub to let
+    pywayland.scanner resolve two external interface type references inside
+    cosmic-toplevel-info-unstable-v1.xml and
+    cosmic-toplevel-management-unstable-v1.xml's deprecated
+    move_to_workspace / move_to_ext_workspace / workspace_enter /
+    workspace_leave / ext_workspace_enter / ext_workspace_leave members:
+    ext_workspace_handle_v1 (the current "ext" standard workspace protocol)
+    and zcosmic_workspace_handle_v1 (its COSMIC-specific predecessor).
+    vt/sources/cosmic_windows.py never instantiates either, so their own
+    request/event lists don't need to match upstream; they only need to
+    exist under the right names so the real interfaces around them get
+    correct, wire-compatible opcode numbers. See _cosmic_wayland/__init__.py.
+  -->
+  <interface name="ext_workspace_handle_v1" version="1">
+    <request name="destroy" type="destructor"/>
+  </interface>
+  <interface name="zcosmic_workspace_handle_v1" version="1">
+    <request name="destroy" type="destructor"/>
+  </interface>
+</protocol>

@@ -84,9 +84,9 @@ $(PY):
 # Re-runs only when pyproject.toml changes, so `make dev` stays fast.
 # The dbus extra is deliberately not installed here -- see the note above.
 $(STAMP): $(ROOT)/pyproject.toml | $(PY)
-	@echo "→ installing voicetalk (editable) + qr, youtube, dev extras"
+	@echo "→ installing voicetalk (editable) + qr, youtube, wayland, dev extras"
 	@$(PIP) install --quiet --upgrade pip setuptools wheel
-	@$(PIP) install --quiet --editable "$(ROOT)[qr,youtube,dev]"
+	@$(PIP) install --quiet --editable "$(ROOT)[qr,youtube,wayland,dev]"
 	@$(PY) -c 'import dbus' 2>/dev/null \
 		|| { echo ""; \
 		     echo "  ⚠ python-dbus is not importable — media players and window"; \

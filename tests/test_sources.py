@@ -343,6 +343,10 @@ def test_youtube_player_target_is_none_when_no_window(monkeypatch):
 
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
     monkeypatch.setattr(youtube_player.shutil, "which", lambda name: f"/usr/bin/{name}")
+    # Route 1/2 (GNOME extension / cosmic_windows.py) is independent of
+    # XDG_SESSION_TYPE, so it needs its own mock rather than relying on the
+    # test environment happening to have neither reachable.
+    monkeypatch.setattr(youtube_player, "find_youtube_tab", lambda: None)
     monkeypatch.setattr(youtube_player, "find_youtube_window", lambda: None)
     assert youtube_player.get_youtube_player_target() is None
 

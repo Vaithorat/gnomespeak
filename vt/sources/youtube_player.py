@@ -1,14 +1,19 @@
 """Keystroke-based playback control for a YouTube tab.
 
-Two delivery routes, tried in that order:
+Three delivery routes, tried in that order:
 
 1. The VoiceTalk GNOME extension. Under Wayland only the compositor may
    synthesise input, and an extension runs inside it -- so this is the only
    route that works there. It works under GNOME on X11 too, which is why it is
    tried first regardless of session type.
-2. xdotool/wmctrl. The fallback for non-GNOME X11 sessions, where there is no
-   extension to talk to. Silently ignored by Wayland, so it is never offered
-   there.
+2. sources/cosmic_windows.py's send_keys(), for a window that backend
+   reported (its ids carry the "cosmic:" prefix -- see COSMIC_PREFIX below).
+   COSMIC has no in-process extension to install, so this goes straight to
+   `zwp_virtual_keyboard_manager_v1` instead; see cosmic_windows.py and
+   cosmic_input.py.
+3. xdotool/wmctrl. The fallback for non-GNOME, non-COSMIC X11 sessions,
+   where there is no compositor-side route to talk to. Silently ignored by
+   Wayland, so it is never offered there.
 
 This complements MPRIS (`sources/mpris.py`) rather than replacing it. MPRIS is
 better for play/pause and track changes -- it reports its own capabilities and
@@ -31,6 +36,7 @@ from vt.sources.windows import (
     list_windows,
     shell_interface,
 )
+from vt.sources.cosmic_windows import PREFIX as COSMIC_PREFIX
 
 try:
     import dbus
@@ -80,17 +86,18 @@ def missing_tools() -> list[str]:
     return [tool for tool in ("xdotool", "wmctrl") if not shutil.which(tool)]
 
 
-# --- route 1: the GNOME extension -------------------------------------------
+# --- routes 1 & 2: the GNOME extension / cosmic_windows.py ------------------
 
 def find_youtube_tab() -> dict | None:
-    """Locate a YouTube tab and the keys that select it, through the extension.
+    """Locate a YouTube tab and the keys that select it, through the extension
+    or (on COSMIC) sources/cosmic_windows.py.
 
     Returns {"wid", "chord", "title"} or None. An empty chord means the tab is
-    already the window's active one and the shortcut can go straight in.
+    already the window's active one and the shortcut can go straight in. `wid`
+    is whatever id the backend that reported the window used -- an int for
+    the GNOME extension, a "cosmic:"-prefixed string for cosmic_windows.py --
+    and _send_keys_to() below is what tells them apart.
     """
-    if dbus is None:
-        return None
-
     windows = list_windows()
     if not windows:
         return None
@@ -108,7 +115,7 @@ def find_youtube_tab() -> dict | None:
         title = str(w.get("title") or "")
         if _is_browser(str(w.get("wm_class") or "")) and "youtube" in title.casefold():
             return {
-                "wid": int(w.get("id")),
+                "wid": w.get("id"),
                 "chord": "",
                 "title": _strip_browser_suffix(title).strip() or "YouTube",
             }
@@ -133,7 +140,7 @@ def find_youtube_tab() -> dict | None:
         for i, tab in enumerate(tabs):
             if "youtube.com" in (tab.get("url") or "").casefold():
                 return {
-                    "wid": int(w.get("id")),
+                    "wid": w.get("id"),
                     "chord": _tab_chord(i, len(tabs)),
                     "title": tab.get("title") or "YouTube",
                 }
@@ -153,23 +160,37 @@ def _chord_for(entry: dict, keys: str) -> str:
     return keys
 
 
-def _send_shell_keys(entry: dict, keys: str) -> dict:
+def _send_keys_to(entry: dict, keys: str) -> dict:
+    """Deliver a chord to `entry`'s window, through whichever backend found it.
+
+    entry["wid"] carries the "cosmic:" prefix when cosmic_windows.py is what
+    reported the window (see find_youtube_tab()); everything else goes
+    through the GNOME extension's D-Bus SendKeys.
+    """
+    chord = _chord_for(entry, keys)
+    wid = entry["wid"]
+
+    if isinstance(wid, str) and wid.startswith(COSMIC_PREFIX):
+        from vt.sources.cosmic_windows import send_keys as cosmic_send_keys
+        return cosmic_send_keys(wid[len(COSMIC_PREFIX):], chord)
+
     try:
-        shell_interface().SendKeys(dbus.UInt32(entry["wid"]), _chord_for(entry, keys))
+        shell_interface().SendKeys(dbus.UInt32(wid), chord)
         return {"ok": True, "message": ""}
     except Exception as e:
         detail = str(e).strip().splitlines()[-1] if str(e).strip() else e.__class__.__name__
         return {"ok": False, "message": f"GNOME extension error: {detail}"}
 
 
-# --- route 2: xdotool -------------------------------------------------------
+# --- route 3: xdotool --------------------------------------------------------
 
 def x11_unavailable_reason() -> str:
     """Why the xdotool fallback is not on offer, or "" when it is available."""
     if is_wayland():
         return (
             "Keystroke control through xdotool needs X11; this is a Wayland "
-            "session, where only the GNOME extension can send keys."
+            "session, where only the GNOME extension or COSMIC's native "
+            "input protocol can send keys."
         )
     missing = missing_tools()
     if missing:
@@ -223,18 +244,12 @@ def _send_x11_keys(window: dict, keys: list[str]) -> dict:
 
 def _no_target_message() -> str:
     """Why no keystroke can be delivered right now, in terms that can be acted on."""
-    if dbus is None and is_wayland():
-        return (
-            "No YouTube tab found, and python-dbus is not importable, so the "
-            "GNOME extension cannot be reached either. Install it with "
-            "'apt install python3-dbus'."
-        )
     if is_wayland():
         return (
-            "No YouTube tab found. Open a video, and make sure the window "
-            "extension is installed and enabled ('vt install-extension', then "
-            "log out and back in) -- under Wayland it is the only way to send "
-            "keys. Play/pause is also available on the MPRIS player."
+            "No YouTube tab found. Open a video -- on GNOME, make sure the "
+            "window extension is installed and enabled ('vt install-extension', "
+            "then log out and back in); on COSMIC no extra setup is needed. "
+            "Play/pause is also available on the MPRIS player."
         )
     reason = x11_unavailable_reason()
     if reason:
@@ -284,7 +299,7 @@ def send_keys(action_id: str) -> dict:
         keys = _TAB_KEYS.get(action_id)
         if not keys:
             return {"ok": False, "message": f"Unknown player action: {action_id}"}
-        result = _send_shell_keys(entry, keys)
+        result = _send_keys_to(entry, keys)
         if result["ok"]:
             result["message"] = f"Sent {action_id.replace('_', ' ')}"
         return result
@@ -307,7 +322,7 @@ def close_youtube_window() -> dict:
     """Close the YouTube tab (extension) or its window (xdotool fallback)."""
     entry = find_youtube_tab()
     if entry:
-        result = _send_shell_keys(entry, "ctrl+w")
+        result = _send_keys_to(entry, "ctrl+w")
         if result["ok"]:
             result["message"] = "Closed the YouTube tab"
         return result
