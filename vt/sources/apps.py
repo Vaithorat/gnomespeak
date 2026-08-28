@@ -154,8 +154,8 @@ def reset_index_cache() -> None:
     _index_built_at = 0.0
 
 
-def _get_desktop_index() -> dict[str, dict]:
-    """Map executable basename -> desktop entry."""
+def get_binary_index() -> dict[str, dict]:
+    """Map executable basename ("firefox") -> desktop entry."""
     _ensure_index()
     return _binary_index or {}
 
@@ -177,7 +177,7 @@ def get_app_targets() -> list[Target]:
     if not psutil:
         return []
 
-    index = _get_desktop_index()
+    index = get_binary_index()
     found: dict[str, Target] = {}
 
     for proc in psutil.process_iter(["name", "exe"]):

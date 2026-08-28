@@ -13,7 +13,7 @@ def make_server(tmp_path, **kwargs) -> VoiceTalkServer:
     """A server whose credential files live under tmp_path.
 
     Without this every test would read -- and pairing tests would write -- the
-    developer's real ~/.config/voicetalk/devices.json.
+    developer's real ~/.config/gnomespeak/devices.json.
     """
     kwargs.setdefault("token", "test-token")
     return VoiceTalkServer(
@@ -165,8 +165,25 @@ async def test_token_page_has_no_closing_script_injection(client):
 
 # --- app quit no longer needs D-Bus (fix 3) --------------------------------
 
-def test_quit_does_not_require_dbus(monkeypatch):
+@pytest.fixture
+def installed(monkeypatch):
+    """Pin the installed-app index so quit tests do not read the real machine.
+
+    execute_app_action now resolves the app name against this index, so without
+    the stub these tests would pass or fail depending on whether the developer
+    happens to have Firefox or VS Code installed.
+    """
+
+    def use(*binaries: str):
+        index = {b: {"binary": b, "name": b} for b in binaries}
+        monkeypatch.setattr("vt.sources.apps.get_binary_index", lambda: index)
+
+    return use
+
+
+def test_quit_does_not_require_dbus(monkeypatch, installed):
     """pkill needs no D-Bus, so a missing python-dbus must not block quit."""
+    installed("firefox")
     monkeypatch.setattr("vt.actions.HAS_DBUS", False)
     calls = []
 
@@ -185,8 +202,9 @@ def test_quit_does_not_require_dbus(monkeypatch):
     assert calls, "pkill was never invoked"
 
 
-def test_quit_matches_the_executable_exactly(monkeypatch):
+def test_quit_matches_the_executable_exactly(monkeypatch, installed):
     """-x -U, not -f: matching the whole command line killed bystanders."""
+    installed("code")
     seen = {}
 
     class Result:
@@ -205,14 +223,34 @@ def test_quit_matches_the_executable_exactly(monkeypatch):
     assert seen["argv"][-1] == "code"
 
 
-def test_quit_reports_when_nothing_matched(monkeypatch):
+def test_quit_reports_when_nothing_matched(monkeypatch, installed):
     class Result:
         returncode = 1  # pkill: no process matched
 
+    installed("ghost")  # installed, but not currently running
     monkeypatch.setattr("vt.actions.subprocess.run", lambda argv, **kw: Result())
     result = execute_app_action("ghost", "quit")
     assert result["ok"] is False
     assert "No running process" in result["message"]
+
+
+def test_quit_rejects_names_that_are_pkill_options(monkeypatch, installed):
+    """"app:-9" must never reach pkill.
+
+    pkill would read the -9 as the signal and -U as the only match criterion
+    left, so the argv that was meant to quit one app would SIGKILL every
+    process this user owns. The name is resolved against the installed index
+    first, which a leading-dash name can never be in.
+    """
+    installed("firefox")
+
+    def fake_run(argv, **kwargs):
+        raise AssertionError(f"pkill was invoked with {argv}")
+
+    monkeypatch.setattr("vt.actions.subprocess.run", fake_run)
+    for name in ("-9", "-f", "--signal=KILL"):
+        result = execute_app_action(name, "quit")
+        assert result["ok"] is False
 
 
 # --- extension error reporting (fix from the focus bug) --------------------

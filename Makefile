@@ -45,7 +45,7 @@ ifdef OPEN
 SERVE_FLAGS += --open
 endif
 
-.PHONY: help dev serve setup deps test lint doctor status commands apps \
+.PHONY: help dev serve setup deps test lint hooks doctor status commands apps \
         env link unlink clean reset
 
 help: ## Show this help
@@ -71,7 +71,7 @@ serve: dev ## Alias for dev
 
 # --- environment -------------------------------------------------------------
 
-setup: $(STAMP) ## Create the venv and install deps (idempotent)
+setup: $(STAMP) hooks ## Create the venv and install deps (idempotent)
 
 # --system-site-packages is mandatory, not a convenience: dbus-python and gi
 # ship as distro packages (python3-dbus, python3-gi) and cannot be pip-installed
@@ -138,6 +138,17 @@ test: setup ## Run the test suite
 lint: setup ## Run the same flake8 checks as CI
 	@$(PY) -m flake8 vt tests --count --select=E9,F63,F7,F82 --show-source --statistics
 	@$(PY) -m flake8 vt tests --count --exit-zero --max-complexity=12 --max-line-length=110 --statistics
+
+# Hooks are versioned in .githooks/ and reached through core.hooksPath, since
+# .git/hooks is not part of the repo and every clone would otherwise start
+# unprotected. Silent once installed, so `make dev` stays quiet; a tarball with
+# no .git is not an error, just nothing to do.
+hooks: ## Install the pre-push hook (runs lint + tests before pushing to main)
+	@git -C $(ROOT) rev-parse --git-dir >/dev/null 2>&1 || exit 0
+	@chmod +x $(ROOT)/.githooks/* 2>/dev/null || true
+	@[ "$$(git -C $(ROOT) config --get core.hooksPath)" = ".githooks" ] || { \
+		git -C $(ROOT) config core.hooksPath .githooks; \
+		echo "→ pre-push hook installed (bypass once with: git push --no-verify)"; }
 
 doctor: setup ## Run preflight checks
 	@$(VT) doctor

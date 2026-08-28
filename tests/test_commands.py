@@ -14,7 +14,7 @@ def config_for(tmp_path, monkeypatch):
     def build(toml: str | None):
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
         if toml is not None:
-            d = tmp_path / "voicetalk"
+            d = tmp_path / "gnomespeak"
             d.mkdir(exist_ok=True)
             (d / "commands.toml").write_text(textwrap.dedent(toml))
         return CommandsConfig()

@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+#
+# Refuse to push to main when the checks CI runs would fail there.
+#
+# Hooks live here rather than in .git/hooks so they are versioned with the
+# repo; `make hooks` points core.hooksPath at this directory. The checks are
+# the Makefile targets CI itself calls, so passing here means passing there
+# for the same reasons -- there is no second copy of the command lines to
+# drift out of sync.
+#
+# Only main is gated. Pushing a topic branch stays fast, and its pull request
+# still runs the full matrix before anything can merge.
+#
+# To push anyway (an emergency, or a branch you know CI will finish):
+#   git push --no-verify
+
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+
+# stdin gives one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+pushing_to_main=0
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+    [ -n "${remote_ref:-}" ] || continue
+    # A deletion pushes an all-zero sha and has no commits to test.
+    [[ "$local_sha" =~ ^0+$ ]] && continue
+    if [ "$remote_ref" = "refs/heads/main" ]; then
+        pushing_to_main=1
+    fi
+done
+
+if [ "$pushing_to_main" -eq 0 ]; then
+    exit 0
+fi
+
+echo ""
+echo "→ pre-push: running CI checks before main"
+echo ""
+
+if ! make -C "$ROOT" lint; then
+    echo ""
+    echo "  ✗ lint failed — push aborted."
+    echo "    Fix the errors above, or bypass with: git push --no-verify"
+    echo ""
+    exit 1
+fi
+
+if ! make -C "$ROOT" test; then
+    echo ""
+    echo "  ✗ tests failed — push aborted."
+    echo "    Fix the failures above, or bypass with: git push --no-verify"
+    echo ""
+    exit 1
+fi
+
+echo ""
+echo "  ✓ checks passed — pushing to main"
+echo ""

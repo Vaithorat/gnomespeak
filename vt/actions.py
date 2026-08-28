@@ -439,6 +439,18 @@ def execute_window_action(window_id: str, action_id: str) -> dict:
 
 def execute_app_action(app_name: str, action_id: str) -> dict:
     """Quit or focus a running app, identified by its executable basename."""
+    # app_name arrives straight off the wire, so confirm it names a real
+    # installed app before it becomes an argv element. A list argv stops the
+    # shell from seeing it, but not pkill: "app:-9" would otherwise reach
+    # pkill as an option, leaving -U as the only criterion and signalling
+    # every one of this user's processes. Matching the launcher, the check is
+    # an index lookup rather than a character filter, so what gets through is
+    # a name we discovered rather than one that merely looks harmless.
+    from vt.sources.apps import get_binary_index
+
+    if app_name not in get_binary_index():
+        return {"ok": False, "message": f"No installed app named {app_name}"}
+
     if action_id == "quit":
         # Match the executable name exactly (-x) and only among this user's own
         # processes (-U). "pkill -f firefox" matched the whole command line, so
