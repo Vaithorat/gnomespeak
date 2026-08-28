@@ -373,6 +373,187 @@ def test_missing_x11_tools_are_named(monkeypatch):
 
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
     monkeypatch.setattr(youtube_player.shutil, "which", lambda name: None)
-    reason = youtube_player.unavailable_reason()
+    monkeypatch.setattr(youtube_player, "find_youtube_tab", lambda: None)
+    reason = youtube_player.x11_unavailable_reason()
     assert "xdotool" in reason and "wmctrl" in reason
     assert youtube_player.get_youtube_player_target() is None
+
+
+def test_youtube_tab_found_by_window_title(monkeypatch):
+    """A window titled "... - YouTube" is already showing it in its active tab.
+
+    That needs no tab switch, so the chord is empty -- and it is the only route
+    that works for browsers whose tabs cannot be enumerated at all.
+    """
+    from vt.sources import youtube_player
+
+    monkeypatch.setattr(youtube_player, "list_windows", lambda: [
+        {"id": 7, "title": "Never Gonna Give You Up - YouTube — Mozilla Firefox",
+         "wm_class": "firefox"},
+    ])
+
+    entry = youtube_player.find_youtube_tab()
+    assert entry == {"wid": 7, "chord": "", "title": "Never Gonna Give You Up - YouTube"}
+    # No tab switch means no address-bar guard either: the keys go straight in.
+    assert youtube_player._chord_for(entry, "f") == "f"
+
+
+def test_a_window_merely_mentioning_youtube_is_not_a_player(monkeypatch):
+    """An editor holding youtube.py must not receive the playback keystrokes.
+
+    Matching on the title alone would send "f" into someone's source file.
+    """
+    from vt.sources import youtube_player
+
+    monkeypatch.setattr(youtube_player, "list_windows", lambda: [
+        {"id": 3, "title": "youtube_player.py - voicetalk - VS Code", "wm_class": "code"},
+        {"id": 5, "title": "yt-dlp youtube.com — Terminal", "wm_class": "org.gnome.Ptyxis"},
+    ])
+    monkeypatch.setattr(youtube_player, "get_firefox_windows", list)
+
+    assert youtube_player.find_youtube_tab() is None
+
+
+def test_youtube_tab_found_in_a_background_tab(monkeypatch):
+    """A video parked behind other tabs still has to be reachable."""
+    from vt.sources import youtube_player
+
+    monkeypatch.setattr(youtube_player, "list_windows", lambda: [
+        {"id": 4, "title": "Inbox — Mozilla Firefox", "wm_class": "firefox"},
+    ])
+    monkeypatch.setattr(youtube_player, "get_firefox_windows", lambda: [
+        {"selected": 0, "tabs": [
+            {"title": "Inbox", "url": "https://mail.example.com/"},
+            {"title": "Docs", "url": "https://docs.example.com/"},
+            {"title": "Cats", "url": "https://www.youtube.com/watch?v=abc"},
+        ]},
+    ])
+
+    entry = youtube_player.find_youtube_tab()
+    assert entry["wid"] == 4
+    assert entry["chord"] == "alt+3"
+    # Alt+N is not reserved, so the page gets taken out of the keyboard path
+    # first -- otherwise a web app that binds Alt+3 swallows the tab switch.
+    assert youtube_player._chord_for(entry, "f") == "ctrl+l,alt+3,escape,f"
+
+
+def test_youtube_keys_go_through_the_extension(monkeypatch):
+    """On Wayland the extension is the only route, so the chord must reach it."""
+    from vt.sources import youtube_player
+
+    monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setattr(
+        youtube_player, "find_youtube_tab",
+        lambda: {"wid": 9, "chord": "", "title": "Cats"},
+    )
+
+    sent = []
+
+    class FakeInterface:
+        def SendKeys(self, wid, chord):
+            sent.append((int(wid), chord))
+
+    monkeypatch.setattr(youtube_player, "shell_interface", lambda: FakeInterface())
+
+    assert youtube_player.send_keys("fullscreen")["ok"] is True
+    assert sent == [(9, "f")]
+
+    sent.clear()
+    assert youtube_player.send_keys("volume_up")["ok"] is True
+    assert sent == [(9, "up")]
+
+    sent.clear()
+    assert youtube_player.close_youtube_window()["ok"] is True
+    assert sent == [(9, "ctrl+w")]
+
+
+# --- YouTube: what to watch next --------------------------------------------
+
+def test_video_id_is_read_from_either_url_shape():
+    from vt.sources import youtube
+
+    assert youtube.video_id("https://www.youtube.com/watch?v=abc123&t=30") == "abc123"
+    assert youtube.video_id("https://youtu.be/abc123") == "abc123"
+    assert youtube.video_id("https://example.com/") == ""
+
+
+def test_current_video_prefers_the_tab_being_watched(monkeypatch):
+    """Two YouTube tabs open: the one in front is the one being asked about."""
+    from vt.sources import youtube
+
+    monkeypatch.setattr(
+        "vt.sources.firefox.get_firefox_windows",
+        lambda: [{"selected": 2, "tabs": [
+            {"title": "Docs", "url": "https://docs.example.com/"},
+            {"title": "Old", "url": "https://www.youtube.com/watch?v=background"},
+            {"title": "Now", "url": "https://www.youtube.com/watch?v=foreground"},
+        ]}],
+    )
+
+    assert youtube.current_video_url().endswith("v=foreground")
+
+
+def test_related_videos_use_the_metadata_list(monkeypatch):
+    from vt.sources import youtube
+
+    monkeypatch.setattr(youtube, "backend", lambda: "module")
+    monkeypatch.setattr(youtube, "_extract_info", lambda url: {
+        "id": "current",
+        "title": "The current video",
+        "related_videos": [
+            {"id": "next1", "title": "Next one", "channel": "Chan", "duration": 90},
+            {"id": "current", "title": "The current video", "duration": 60},
+        ],
+    })
+
+    videos, error = youtube.related_videos("https://www.youtube.com/watch?v=current")
+    assert error == ""
+    # The video already playing is not something to play next.
+    assert [v["id"] for v in videos] == ["next1"]
+    assert videos[0]["url"] == "https://www.youtube.com/watch?v=next1"
+
+
+def test_related_videos_fall_back_to_searching_the_title(monkeypatch):
+    """yt-dlp has never promised a related list, so its absence is not a failure."""
+    from vt.sources import youtube
+
+    monkeypatch.setattr(youtube, "backend", lambda: "module")
+    monkeypatch.setattr(youtube, "_extract_info",
+                        lambda url: {"id": "current", "title": "Lo-fi beats"})
+
+    searched = []
+
+    def fake_search(query, limit):
+        searched.append(query)
+        return [
+            {"id": "current", "title": "Lo-fi beats", "channel": "C", "duration": 1, "url": "u"},
+            {"id": "other", "title": "More lo-fi", "channel": "C", "duration": 2, "url": "u2"},
+        ], ""
+
+    monkeypatch.setattr(youtube, "search", fake_search)
+
+    videos, error = youtube.related_videos("https://www.youtube.com/watch?v=current")
+    assert error == ""
+    assert searched == ["Lo-fi beats"]
+    assert [v["id"] for v in videos] == ["other"]
+
+
+def test_related_videos_without_a_video_say_what_to_do(monkeypatch):
+    from vt.sources import youtube
+
+    monkeypatch.setattr(youtube, "backend", lambda: "module")
+    monkeypatch.setattr(youtube, "current_video_url", lambda: "")
+
+    videos, error = youtube.related_videos("")
+    assert videos == []
+    assert "No YouTube video is open" in error
+
+
+def test_related_videos_report_a_missing_yt_dlp(monkeypatch):
+    """"No results" is how a missing dependency came to look like a network fault."""
+    from vt.sources import youtube
+
+    monkeypatch.setattr(youtube, "backend", lambda: "")
+    videos, error = youtube.related_videos("https://www.youtube.com/watch?v=x")
+    assert videos == []
+    assert "yt-dlp" in error

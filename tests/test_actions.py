@@ -218,18 +218,22 @@ def test_youtube_player_action_dispatch():
     assert "ok" in result and "message" in result
 
 
-def test_keystroke_control_is_refused_on_wayland(monkeypatch):
+def test_keystroke_control_needs_the_extension_on_wayland(monkeypatch):
     """xdotool cannot drive a Wayland client, so the buttons must not pretend.
 
     Shipping them anyway meant every tap reported success while nothing moved.
+    The extension is the supported route there; with no tab reachable through
+    it the failure has to name that, not just restate that xdotool is out.
     """
     from vt.sources import youtube_player
 
     monkeypatch.setenv("XDG_SESSION_TYPE", "wayland")
+    monkeypatch.setattr(youtube_player, "find_youtube_tab", lambda: None)
     assert youtube_player.get_youtube_player_target() is None
 
     result = actions.execute_youtube_player_action("play_pause")
     assert result["ok"] is False
+    assert "install-extension" in result["message"]
     assert "MPRIS" in result["message"]
 
 
@@ -237,6 +241,7 @@ def test_keystroke_control_focuses_before_typing(monkeypatch):
     """Keys land in the focused window; without wmctrl -a they hit the wrong one."""
     from vt.sources import youtube_player
 
+    monkeypatch.setattr(youtube_player, "find_youtube_tab", lambda: None)
     monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
     monkeypatch.setattr(youtube_player.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
@@ -258,6 +263,7 @@ def test_youtube_player_close_window(monkeypatch):
     """Closing YouTube requires a window to exist."""
     from vt.sources import youtube_player
 
+    monkeypatch.setattr(youtube_player, "find_youtube_tab", lambda: None)
     monkeypatch.setattr(youtube_player.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(youtube_player, "find_youtube_window", lambda: None)
     result = actions.execute_youtube_player_action("close")

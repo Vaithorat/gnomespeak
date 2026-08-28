@@ -53,20 +53,28 @@ def test_hostile_title_is_escaped(rendered):
     Collector().feed(rendered)
 
     assert "img" not in tags, "the payload was parsed as markup"
-    assert tags == ["div", "span", "span", "span"]
+    # card > row > icon + body(title, subtitle) + the "more actions" button
+    assert tags == ["div", "div", "span", "div", "div", "div", "button"]
     # It survives as visible text, which is the point.
     assert "&lt;img src=x onerror=alert(1)&gt;" in rendered
 
 
 def test_hostile_subtitle_and_icon_are_escaped(rendered):
-    # Three escaped copies: icon, title, subtitle. Plus one in the id attribute.
-    assert rendered.count("&lt;img") == 4
+    # Three escaped copies: icon, title, subtitle. Plus the id, which appears
+    # in data-target for the tap and data-more for the action sheet.
+    assert rendered.count("&lt;img") == 5
 
 
 def test_target_id_lands_in_a_data_attribute(rendered):
     """Not in an inline handler: attribute + JS is two parsers, one escape."""
-    assert "data-nav=" in rendered
+    assert "data-target=" in rendered
+    assert "data-more=" in rendered
     assert "onclick=" not in rendered
+
+
+def test_row_tap_runs_the_primary_action(rendered):
+    """Focusing a window is one tap, not a drill-down and then a button."""
+    assert 'data-action="focus"' in rendered
 
 
 def test_no_data_carrying_inline_handlers_remain():
@@ -139,3 +147,47 @@ def test_youtube_signature_tracks_the_note(rendered_youtube):
 def test_search_box_survives_the_banner(rendered_youtube):
     assert 'id="youtubeSearch"' in rendered_youtube
     assert 'id="youtubeList"' in rendered_youtube
+
+
+# --- the home dashboard -----------------------------------------------------
+# The overhaul's whole claim is fewer taps, so what the home screen offers
+# without being tapped is worth pinning down.
+
+@pytest.fixture(scope="module")
+def rendered_home() -> str:
+    return _render("home")
+
+
+def test_home_puts_transport_on_screen(rendered_home):
+    """Pause is one tap from opening the page, not three."""
+    assert 'data-action="play_pause"' in rendered_home
+    assert 'data-action="next"' in rendered_home
+    assert 'data-action="prev"' in rendered_home
+    # Playing, so the primary button shows pause rather than play.
+    assert "⏸" in rendered_home
+
+
+def test_home_carries_volume_and_quick_actions(rendered_home):
+    assert 'data-action="volume"' in rendered_home
+    assert 'data-action="mute"' in rendered_home
+    assert 'class="tile"' in rendered_home
+
+
+def test_home_progress_is_painted_not_rebuilt(rendered_home):
+    """Position never enters the signature; the bar is written to the DOM."""
+    assert 'data-progress-for="mpris:vlc"' in rendered_home
+    assert "progress-fill" in rendered_home
+
+
+def test_home_escapes_player_metadata(rendered_home):
+    from html.parser import HTMLParser
+
+    tags = []
+
+    class Collector(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tags.append(tag)
+
+    Collector().feed(rendered_home)
+    assert "img" not in tags
+    assert "&lt;img src=x onerror=alert(1)&gt;" in rendered_home

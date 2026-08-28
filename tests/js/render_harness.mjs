@@ -2,7 +2,8 @@
    from hostile metadata, so the escaping can be asserted from a test rather
    than by reading the source.
 
-   argv[3] picks the view: "category" (default), "installed", or "youtube". */
+   argv[3] picks the view: "category" (default), "installed", "youtube" or
+   "home". */
 
 import fs from "node:fs";
 import vm from "node:vm";
@@ -16,10 +17,15 @@ const script = html.slice(
 const el = (id) => ({
   id,
   innerHTML: "",
-  classList: { add() {}, remove() {} },
+  classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
   textContent: "",
+  scrollTop: 0,
+  dataset: {},
   addEventListener() {},
   querySelector: () => null,
+  querySelectorAll: () => [],
+  closest: () => null,
+  focus() {},
 });
 const mode = process.argv[3] || "category";
 const nodes = {};
@@ -27,8 +33,12 @@ const sandbox = {
   console,
   document: {
     getElementById: (id) => (nodes[id] ||= el(id)),
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    activeElement: null,
     addEventListener() {},
   },
+  navigator: { userAgent: "node", vibrate() {} },
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   window: {
     location: {
@@ -55,8 +65,10 @@ vm.runInContext(script + "\n;globalThis.__renderCategory = renderCategory;" +
   "globalThis.__renderYoutube = renderYoutube;" +
   "globalThis.__apps = (a) => { installedApps = a; };" +
   "globalThis.__nav = (n) => { navStack = n; };" +
+  "globalThis.__renderHome = renderHome;" +
   "globalThis.__signature = () => viewSignature();" +
-  "globalThis.__state = (s) => { state = s; };", sandbox);
+  "globalThis.__state = (s) => { state = s; };" +
+  "globalThis.__rowsOf = (el) => el.innerHTML;", sandbox);
 
 const hostile = "<img src=x onerror=alert(1)>";
 
@@ -85,7 +97,12 @@ if (mode === "installed") {
         title: `Evil ${hostile}`,
         subtitle: `sub ${hostile}`,
         icon: hostile,
-        actions: [],
+        // A real window always offers at least focus, and the row's tap runs
+        // it directly -- so the hostile id lands in a data attribute twice.
+        actions: [
+          { id: "focus", label: "Focus", kind: "button" },
+          { id: "close", label: "Close", kind: "confirm" },
+        ],
       },
     ],
   });
@@ -120,4 +137,52 @@ if (mode === "youtube") {
   // The signature must move with the note, or the banner would never clear.
   console.log(out.innerHTML);
   console.log("SIGNATURE:" + sandbox.__signature());
+}
+
+if (mode === "home") {
+  // The dashboard is the whole point of the tab bar: what is playing and the
+  // controls for it are on screen before anything is tapped.
+  sandbox.__state({
+    targets: [
+      {
+        id: "mpris:vlc",
+        kind: "player",
+        title: `Now ${hostile}`,
+        subtitle: `by ${hostile}`,
+        icon: "♪",
+        status: "playing",
+        position: 30,
+        length: 120,
+        actions: [
+          { id: "play_pause", label: "Pause", kind: "button" },
+          { id: "next", label: "Next", kind: "button" },
+          { id: "prev", label: "Previous", kind: "button" },
+        ],
+      },
+      {
+        id: "system:audio",
+        kind: "system",
+        title: "System Audio",
+        icon: "🔊",
+        status: "active",
+        actions: [
+          { id: "volume", label: "Volume (40%)", kind: "slider", value: 0.4 },
+          { id: "mute", label: "Mute", kind: "button" },
+        ],
+      },
+      {
+        id: `window:${hostile}`,
+        kind: "window",
+        title: `Evil ${hostile}`,
+        icon: "▣",
+        actions: [
+          { id: "focus", label: "Focus", kind: "button" },
+          { id: "close", label: "Close", kind: "confirm" },
+        ],
+      },
+    ],
+  });
+  const out = el("out");
+  sandbox.__renderHome(out);
+  console.log(nodes.homeResults.innerHTML);
 }
