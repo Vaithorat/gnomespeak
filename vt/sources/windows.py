@@ -28,6 +28,8 @@ _DIRECT_TAB_LIMIT = 8
 
 def shell_interface():
     """The GNOME extension's D-Bus interface. Raises if it is not running."""
+    if dbus is None:
+        raise RuntimeError("python-dbus is not available")
     bus = dbus.SessionBus()
     # introspect=False: the interface is named explicitly on the next line, so
     # the Introspect round trip is pure cost -- once per second, forever.

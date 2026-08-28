@@ -69,11 +69,16 @@ def _device_label(props: dict) -> str:
 
 
 def _set_powered(path: str, on: bool) -> dict:
-    bus = dbus.SystemBus()
-    obj = bus.get_object(BLUEZ, path, introspect=False)
-    props = dbus.Interface(obj, PROPS_IFACE)
-    props.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(on), timeout=10)
-    return {"ok": True, "message": "Bluetooth on" if on else "Bluetooth off"}
+    if dbus is None:
+        return {"ok": False, "message": "python-dbus is not importable; Bluetooth is unavailable"}
+    try:
+        bus = dbus.SystemBus()
+        obj = bus.get_object(BLUEZ, path, introspect=False)
+        props = dbus.Interface(obj, PROPS_IFACE)
+        props.Set(ADAPTER_IFACE, "Powered", dbus.Boolean(on), timeout=10)
+        return {"ok": True, "message": "Bluetooth on" if on else "Bluetooth off"}
+    except Exception as e:
+        return {"ok": False, "message": f"Bluetooth error: {e}"}
 
 
 def get_bluetooth_targets() -> list[Target]:
