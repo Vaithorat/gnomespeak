@@ -4,15 +4,13 @@ import json
 from urllib.parse import urlparse
 
 from vt.model import Target, Action
+from vt.shell import SHELL_BUS_NAME, SHELL_OBJECT_PATH, is_available
 from vt.sources.firefox import get_firefox_windows
 
 try:
     import dbus
 except ImportError:
     dbus = None
-
-SHELL_BUS_NAME = "org.gnome.Shell.Extensions.VoiceTalk"
-SHELL_OBJECT_PATH = "/org/gnome/Shell/Extensions/VoiceTalk"
 
 BROWSERS = {"firefox", "chrome", "chromium", "brave", "edge", "opera"}
 
@@ -71,6 +69,32 @@ def workspace_info() -> dict:
         return json.loads(shell_interface().Workspaces())
     except Exception:
         return {}
+
+
+def get_extension_targets() -> list[Target]:
+    """A single row saying the extension is missing, when it is.
+
+    Everything the extension provides used to fail silently and separately: the
+    Windows section was simply empty, the touchpad reported an error per tap,
+    and nothing on the phone connected those to one missing install. This is
+    the one place that says it, and it disappears the moment the extension
+    answers.
+    """
+    if dbus is None or is_available():
+        return []
+    return [Target(
+        id="system:extension",
+        kind="system",
+        title="GNOME extension not loaded",
+        subtitle="No window, workspace, touchpad or typing control",
+        icon="⚠",
+        status="missing",
+        note=(
+            "Install it on the PC with `vt install-extension`, then log out and "
+            "back in -- GNOME Shell only loads extensions at session start under "
+            "Wayland. Media players, apps and system controls work without it."
+        ),
+    )]
 
 
 def _is_browser(wm_class: str) -> bool:

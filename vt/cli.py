@@ -1,6 +1,7 @@
 """Command-line interface."""
 
 import argparse
+import shutil
 import sys
 import subprocess
 from vt.actions import execute_action
@@ -207,39 +208,82 @@ def cmd_doctor(args):
         checks.append(("✗", "MPRIS", "D-Bus error"))
         fail_count += 1
 
-    # Check 5: GNOME extension. Catch bare Exception -- naming
-    # dbus.DBusException here would itself raise NameError when the dbus import
-    # above failed, taking down the whole doctor run.
-    try:
-        import dbus
-        bus = dbus.SessionBus()
-        bus.get_object(
-            "org.gnome.Shell.Extensions.GnomeSpeak",
-            "/org/gnome/Shell/Extensions/GnomeSpeak",
-        )
-        # Answering the bus is not the same as being current. A Shell
-        # extension only reloads on log out, so an updated checkout can sit on
-        # disk for days while the old build keeps serving -- and every action
-        # added since then fails one at a time with nothing tying them
-        # together. Workspaces is the newest method; probe it as the version.
-        obj = bus.get_object(
-            "org.gnome.Shell.Extensions.GnomeSpeak",
-            "/org/gnome/Shell/Extensions/GnomeSpeak",
-            introspect=False,
-        )
-        interface = dbus.Interface(obj, "org.gnome.Shell.Extensions.GnomeSpeak")
-        try:
-            interface.Workspaces()
-            checks.append(("✓", "Extension", "D-Bus interface active"))
+    # Check 5: GNOME extension. Every name here comes from vt.shell, because
+    # this check once hardcoded a bus name of its own -- and when the project
+    # was renamed, this copy was the only one that changed. It then reported
+    # "not active" on every machine, including the ones where the extension was
+    # answering every call vt made.
+    from vt import shell as shell_mod
+
+    if not shell_mod.is_available():
+        problems = shell_mod.install_problems()
+        if problems:
+            # Naming the on-disk state is the difference between "you never
+            # installed it" and "your install broke when the project was
+            # renamed" -- which from the phone look identical.
+            checks.append(("⚠", "Extension", "Not active — " + problems[0]))
+            for extra in problems[1:]:
+                checks.append((" ", "", extra))
+            checks.append((" ", "", "fix: vt install-extension, then log out and back in"))
+        else:
+            checks.append(("ℹ", "Extension", "Installed but not loaded (log out and back in)"))
+        checks.append((" ", "", "without it: no window, workspace, touchpad or"))
+        checks.append((" ", "", "typing control (media and system control still work)"))
+        warn_count += 1
+    else:
+        # Answering the bus is not the same as being current. A Shell extension
+        # only reloads on log out, so an updated checkout can sit on disk for
+        # days while the old build keeps serving -- and every action added since
+        # then fails one at a time with nothing tying them together.
+        # Introspection names the gap without invoking anything for its side
+        # effects: calling Pointer() to prove Pointer() exists moves the mouse.
+        missing = shell_mod.missing_methods()
+        if not missing:
+            checks.append(("✓", "Extension", "D-Bus interface active, all methods present"))
             ok_count += 1
-        except Exception:
-            checks.append(("⚠", "Extension", "Running an older build"))
-            checks.append((" ", "", "window minimize/maximize, workspaces and"))
-            checks.append((" ", "", "YouTube keys need the current one"))
+        else:
+            checks.append(("⚠", "Extension", f"Running an older build ({len(missing)} method(s) missing)"))
+            for feature in shell_mod.missing_features(missing):
+                checks.append((" ", "", f"unavailable: {feature}"))
             checks.append((" ", "", "fix: vt install-extension, then log out and back in"))
             warn_count += 1
-    except Exception:
-        checks.append(("ℹ", "Extension", "Not active (optional; run 'vt install-extension')"))
+
+    # Check 5b: the tools the phone-to-PC features need. All three are optional
+    # and each fails in its own quiet way -- an empty clipboard box, a
+    # notification list that never fills, an upload that has nowhere to land --
+    # so they are worth a line each here rather than a discovery on the phone.
+    from vt.sources.clipboard import backend as clipboard_backend, unavailable_message
+    from vt.sources.notifications_mirror import mirror
+
+    tool = clipboard_backend()
+    if tool:
+        checks.append(("✓", "Clipboard", f"{tool['name']} available"))
+        ok_count += 1
+    else:
+        checks.append(("⚠", "Clipboard", "No clipboard tool"))
+        checks.append((" ", "", unavailable_message()))
+        warn_count += 1
+
+    if mirror().available():
+        checks.append(("✓", "Notifications", "dbus-monitor available for mirroring"))
+        ok_count += 1
+    else:
+        checks.append(("ℹ", "Notifications", "dbus-monitor not installed"))
+        checks.append((" ", "", "notification mirroring is unavailable"))
+        checks.append((" ", "", "fix: sudo apt install dbus-bin"))
+        warn_count += 1
+
+    try:
+        from vt.sources.transfer import transfer_dir
+
+        directory = transfer_dir()
+        probe = directory / ".vt-write-test"
+        probe.write_text("")
+        probe.unlink()
+        checks.append(("✓", "File transfer", f"{directory} is writable"))
+        ok_count += 1
+    except Exception as e:
+        checks.append(("⚠", "File transfer", f"Cannot write the transfer folder: {e}"))
         warn_count += 1
 
     # Check 5b: COSMIC window control -- only relevant as a fallback, so skip
@@ -563,24 +607,164 @@ def cmd_allow_autoplay(args):
         print("  Restart Firefox for it to take effect (or re-run with --restart).")
 
 
+ENABLED_KEY = ["org.gnome.shell", "enabled-extensions"]
+
+
+def _enabled_extensions():
+    """The dconf list of enabled extension uuids, or None if unreadable."""
+    import ast
+
+    try:
+        result = subprocess.run(
+            ["gsettings", "get"] + ENABLED_KEY, capture_output=True, text=True, timeout=5
+        )
+        if result.returncode != 0:
+            return None
+        value = ast.literal_eval(result.stdout.strip())
+        return value if isinstance(value, list) else None
+    except Exception:
+        return None
+
+
+def _write_enabled_extensions(uuids) -> bool:
+    try:
+        result = subprocess.run(
+            ["gsettings", "set"] + ENABLED_KEY + [str(list(uuids))],
+            capture_output=True, text=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def disable_extension(uuid: str) -> bool:
+    """Drop an extension from the enabled list, running shell or not.
+
+    `gnome-extensions disable` fails for an extension the shell never scanned --
+    which is exactly the case for a uuid whose directory has just been deleted,
+    and the one where leaving it enabled matters least but reads worst.
+    """
+    subprocess.run(["gnome-extensions", "disable", uuid], capture_output=True)
+    enabled = _enabled_extensions()
+    if enabled is None or uuid not in enabled:
+        return False
+    return _write_enabled_extensions([u for u in enabled if u != uuid])
+
+
+def enable_extension(uuid: str):
+    """Enable an extension, working around a shell that has not scanned it yet.
+
+    `gnome-extensions enable` asks the running shell, and the running shell only
+    scans the extensions directory at session start -- so for a *newly copied*
+    extension under Wayland it always answers "does not exist". Telling the user
+    to run the same command by hand just hands them the same error. The enabled
+    list is a dconf key, though, and writing it directly sticks: the extension
+    comes up enabled at the next login, which is when it could have loaded
+    anyway. Returns (ok, message).
+    """
+    result = subprocess.run(
+        ["gnome-extensions", "enable", uuid], capture_output=True, text=True
+    )
+    if result.returncode == 0:
+        return True, "Extension enabled"
+
+    enabled = _enabled_extensions()
+    if enabled is None:
+        return False, (
+            "Could not read the enabled-extensions setting. Enable it after "
+            f"logging back in: gnome-extensions enable {uuid}"
+        )
+    if uuid in enabled:
+        return True, "Extension already enabled; it loads at the next login"
+    if _write_enabled_extensions(enabled + [uuid]):
+        return True, "Extension enabled for the next session"
+    return False, (
+        "Could not enable the extension automatically. Enable it after logging "
+        f"back in: gnome-extensions enable {uuid}"
+    )
+
+
+def _extension_already_set_up() -> bool:
+    """Whether there is nothing for --if-needed to do, printing why.
+
+    `make dev` runs the install on every start, so a fresh clone comes up with
+    window and touchpad control working at the next login rather than after a
+    command nobody knew to run. Healthy means both halves: the directory is
+    there and unbroken, and the uuid is in the enabled list -- an extension that
+    is installed but disabled behaves exactly like one that was never installed.
+    """
+    from vt.shell import EXTENSION_UUID, install_problems
+
+    if not shutil.which("gnome-extensions"):
+        print("ℹ No GNOME Shell here — skipping the extension")
+        print("  Window, workspace, touchpad and typing control need it; everything else works")
+        return True
+
+    enabled = _enabled_extensions()
+    # An unreadable setting (no gsettings, no dconf) is not evidence of a
+    # problem, and reinstalling on every run to chase it would help nobody.
+    listed = enabled is None or EXTENSION_UUID in enabled
+    if not install_problems() and listed:
+        print("✓ GNOME extension installed")
+        return True
+    return False
+
+
 def cmd_install_extension(args):
     """Install the GNOME extension."""
-    import shutil
     from pathlib import Path
+
+    from vt.shell import EXTENSION_UUID, LEGACY_EXTENSION_UUIDS, extensions_dir
+
+    if_needed = getattr(args, "if_needed", False)
+    if if_needed and _extension_already_set_up():
+        return
 
     try:
         # Find the extension source
-        ext_src = Path(__file__).parent.parent / "gnome-extension" / "gnomespeak@local"
+        ext_src = Path(__file__).parent.parent / "gnome-extension" / EXTENSION_UUID
         if not ext_src.exists():
-            print(f"✗ Extension source not found at {ext_src}")
+            # Not fatal under --if-needed: this is a setup step running
+            # alongside others, and every feature the extension backs already
+            # reports its own absence rather than failing the whole run.
+            print(f"{'⚠' if if_needed else '✗'} Extension source not found at {ext_src}")
+            if if_needed:
+                return
             sys.exit(1)
 
         # Target directory
-        ext_dir = Path.home() / ".local" / "share" / "gnome-shell" / "extensions"
+        ext_dir = extensions_dir()
         ext_dir.mkdir(parents=True, exist_ok=True)
 
+        # A pre-rename install is a symlink named voicetalk@local pointing at a
+        # directory that the rename deleted. GNOME Shell drops a dangling
+        # extension without a word, so every window, workspace and tab action
+        # stopped working with nothing on screen to say why -- and installing
+        # under the new name leaves the dead one enabled beside it.
+        for uuid in LEGACY_EXTENSION_UUIDS:
+            # Two halves, cleaned separately: the directory can be gone while
+            # the uuid is still in the enabled list, which is how a deleted
+            # extension keeps showing up as enabled forever.
+            if disable_extension(uuid):
+                print(f"✓ Dropped {uuid} from the enabled extensions")
+            legacy = ext_dir / uuid
+            if not (legacy.is_symlink() or legacy.exists()):
+                continue
+            broken = legacy.is_symlink() and not legacy.exists()
+            if legacy.is_symlink() or legacy.is_file():
+                legacy.unlink()
+            else:
+                shutil.rmtree(legacy)
+            print(f"✓ Removed the old {uuid} install"
+                  + (" (a dangling symlink)" if broken else ""))
+
         # Symlink or copy
-        target = ext_dir / "gnomespeak@local"
+        target = ext_dir / EXTENSION_UUID
+        # A symlink whose target is gone is not exists(), so check both: the
+        # "already installed" branch used to swallow exactly the broken case.
+        if target.is_symlink() and not target.exists():
+            target.unlink()
+            print("  Replacing a dangling extension symlink")
         if target.exists():
             print(f"  Extension already installed at {target}")
         else:
@@ -593,17 +777,8 @@ def cmd_install_extension(args):
                 shutil.copytree(ext_src, target, dirs_exist_ok=True)
                 print(f"✓ Copied extension to {target}")
 
-        # Enable the extension
-        try:
-            subprocess.run(
-                ["gnome-extensions", "enable", "gnomespeak@local"],
-                check=True,
-                capture_output=True,
-            )
-            print("✓ Extension enabled")
-        except subprocess.CalledProcessError:
-            print("⚠ Failed to enable extension automatically.")
-            print("  Run manually: gnome-extensions enable gnomespeak@local")
+        ok, note = enable_extension(EXTENSION_UUID)
+        print(("✓ " if ok else "⚠ ") + note)
 
         print()
         print("ℹ On Wayland, GNOME Shell will not reload.")
@@ -716,7 +891,12 @@ def main():
     )
 
     # install-extension
-    subparsers.add_parser("install-extension", help="Install GNOME extension")
+    ext_parser = subparsers.add_parser("install-extension", help="Install GNOME extension")
+    ext_parser.add_argument(
+        "--if-needed",
+        action="store_true",
+        help="Do nothing when the install is already healthy (used by `make dev`)",
+    )
 
     args = parser.parse_args()
 

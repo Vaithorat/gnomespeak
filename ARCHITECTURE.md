@@ -72,17 +72,52 @@ dependency costs you one section of the UI, not the server.
 | `sources/apps.py` | Running apps, matched to `.desktop` entries | `psutil` |
 | `sources/apps.py` | Installed apps (`/api/apps`, not the snapshot) | — |
 | `sources/youtube.py` | YouTube search results (`/api/youtube`, not the snapshot) | `yt-dlp` |
-| `sources/audio.py` | Default sink volume and mute | `wpctl` (PipeWire) |
+| `sources/audio.py` | Default sink and source volume and mute | `wpctl` (PipeWire) |
+| `sources/network.py` | Wi-Fi radio on/off | `python3-dbus`, NetworkManager |
+| `sources/clipboard.py` | The PC clipboard (`/api/clipboard`, not the snapshot) | `wl-clipboard`, or `xclip`/`xsel` |
+| `sources/remote_input.py` | Nothing — pointer, typing and chords are write-only (`/api/input`) | GNOME extension |
+| `sources/notifications_mirror.py` | Desktop notifications (`/api/notifications`, not the snapshot) | `dbus-monitor` |
+| `sources/transfer.py` | Files sent from a phone (`/api/files`, not the snapshot) | — |
 | `commands.py` | User-defined commands | `~/.config/gnomespeak/commands.toml` |
+
+Four of those are deliberately outside the 1 Hz snapshot. The clipboard, the
+notification feed and the transferred-file list are all things the phone asks
+for when a screen that shows them is open; pushing them to every phone every
+second would be a poll that mostly re-sends what nobody is looking at. Remote
+input is not state at all -- it produces nothing to display, only deltas to
+apply, and it streams the other way at 20 Hz.
 
 ## The GNOME extension
 
-`gnome-extension/gnomespeak@local/` exports three D-Bus methods on
-`org.gnome.Shell.Extensions.VoiceTalk`: `List() → JSON`, `Focus(id)`, and
-`Close(id)`. Window ids are Mutter stable sequences, which survive restacking.
+`gnome-extension/gnomespeak@local/` exports one D-Bus interface,
+`org.gnome.Shell.Extensions.VoiceTalk`, in three groups: windows (`List() →
+JSON`, `Focus`, `Close`, `Minimize`, `Unminimize`, `Maximize`, `Unmaximize`),
+workspaces (`MoveToWorkspace`, `SwitchWorkspace`, `Workspaces`) and input
+(`SendKeys` into a named window; `Pointer`, `Click`, `Scroll`, `TypeText` and
+`Keys` into whatever has focus). Window ids are Mutter stable sequences, which
+survive restacking.
 
-It is optional. Without it, the Windows section is empty and app Focus fails
-with a clear message — everything else works.
+Under Wayland only the compositor may synthesize input, so the input group is
+not an optimisation over `xdotool` — it is the only thing that works at all.
+
+The bus name keeps its pre-rename spelling on purpose. It is a wire identifier
+shared with an extension that reloads only at login, so changing it would break
+every installed extension until its owner logged out, for no visible gain. Every
+module reads it from `vt/shell.py`; the one time a copy of that string lived
+somewhere else, the rename reached only that copy and `vt doctor` reported the
+extension missing on machines where it was answering every call.
+
+`make dev` installs it (`vt install-extension --if-needed`), so a fresh clone
+has window and touchpad control at the developer's next login rather than after
+a command nobody knew to run. That step is a no-op once the directory is present
+and the uuid is in `org.gnome.shell enabled-extensions`, skips itself entirely
+on a machine with no GNOME Shell, and never fails the run.
+
+It is optional. Without it, the Windows section is empty, the touchpad says so
+at the top of its own screen, app Focus fails with a clear message, and the
+server says once at startup that it is not loaded — everything else works. `vt/shell.py` also reads the on-disk install state, so
+"not active" can distinguish never installed, installed-not-yet-loaded, and the
+dangling symlink a rename leaves behind.
 
 Two operational notes, both learned the hard way:
 
@@ -161,6 +196,20 @@ to add.
 | `GET /api/apps` | token/device | Installed apps, optionally filtered by `?q=` |
 | `GET /api/youtube` | token/device | YouTube videos, searched by `?q=` |
 | `POST /api/do` | token/device | `{target, action, value?}` → `{ok, message}` |
+| `GET /api/clipboard` | token/device | The PC's clipboard as text |
+| `POST /api/clipboard` | token/device | `{text}` → put it on the PC's clipboard |
+| `POST /api/input` | token/device | `{op: move\|click\|scroll\|type\|keys, ...}` |
+| `GET /api/notifications` | token/device | Desktop notifications after `?since=<seq>` |
+| `GET /api/files` | token/device | What has been transferred, newest first |
+| `POST /api/upload` | token/device | Multipart `file` field, streamed to disk |
+| `GET /api/files/{name}` | token/device | Download one transferred file |
+| `POST /api/files/open` | token/device | `{name}` → open it on the PC |
+
+**Why remote input is not an action.** `/api/do` looks a target up in the
+snapshot and writes an audit line per call. A trackpad has no target and sends
+twenty deltas a second, which would bury every other line in the log. `/api/input`
+therefore skips both, and audits only what was typed and which chords were sent
+— the parts anyone reading the log afterwards would actually want.
 
 **Why installed apps are not in the snapshot.** They are a different kind of
 data: hundreds of rows that change about once a week, against a snapshot of a

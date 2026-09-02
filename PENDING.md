@@ -12,7 +12,17 @@
 - ✅ **Security headers** — CSP, HSTS, X-Frame-Options, nosniff
 - ✅ **Rate limiting** — auth and pairing attempts rate-limited
 - ✅ **Audit log** — every action and rejection recorded
-- ✅ **Full test coverage** — 97 tests, all passing
+- ✅ **Full test coverage** — 287 tests, all passing
+- ✅ **Night light toggle** — `system:display` gets a night-light action via `gsettings`, alongside brightness
+- ✅ **Keep-awake toggle** — `system:power` can inhibit the idle screensaver via `org.gnome.SessionManager`, for casting a long video without the screen locking
+- ✅ **Dark/light theme toggle** — `system:display` flips `org.gnome.desktop.interface color-scheme`
+- ✅ **Microphone control** — `system:mic` mirrors `system:audio`'s volume slider and mute, for the default input node
+- ✅ **Wi-Fi radio toggle** — `system:wifi` flips `WirelessEnabled` via NetworkManager (`vt/sources/network.py`), radio on/off only, no network picking
+- ✅ **Touchpad, typing and presentation remote** — pointer, scroll, click, literal text and key chords through the GNOME extension (`vt/sources/remote_input.py`, `/api/input`); works under Wayland, where only the compositor may synthesize input
+- ✅ **Clipboard sync** — read and set the PC clipboard from the phone (`vt/sources/clipboard.py`, `/api/clipboard`) via wl-clipboard, xclip or xsel
+- ✅ **Notification mirroring** — desktop notifications streamed to the phone, read-only, by reading `dbus-monitor` (`vt/sources/notifications_mirror.py`, `/api/notifications`)
+- ✅ **File transfer** — phone → `~/Downloads/GnomeSpeak` and back, with open-on-PC (`vt/sources/transfer.py`, `/api/upload`, `/api/files`)
+- ✅ **Extension identity in one place** — bus name, object path, uuid and expected method set live in `vt/shell.py`; `vt doctor` introspects the live extension and names the features a stale build is missing
 
 ## Known Limitations (By Design)
 
@@ -55,18 +65,48 @@
 
 ## Unimplemented Features
 
+### Fixed in this round
+
+- **`vt doctor` always said the extension was missing** — the rename to
+  GnomeSpeak changed the bus name in `cli.py` only, so doctor probed
+  `org.gnome.Shell.Extensions.GnomeSpeak`, which nothing has ever exported. The
+  name now lives once, in `vt/shell.py`.
+- **The rename left a dangling extension symlink** — an install from before it
+  is `voicetalk@local` pointing into a directory the rename deleted. GNOME
+  Shell drops such an extension silently, so windows, workspaces and tab
+  control all stopped at once with nothing on screen to say why.
+  `vt install-extension` now removes it (and drops it from
+  `org.gnome.shell enabled-extensions`), and `vt doctor` names the state.
+- **`gnome-extensions enable` cannot enable a newly copied extension** — the
+  running shell only scans the extensions directory at session start, so it
+  answered "does not exist" and the printed fallback was the same failing
+  command. The uuid is written straight into the dconf enabled list instead.
+- **A missing extension was invisible on the phone** — `system:extension` is
+  now a snapshot target, so the System tab and the touchpad screen say it once
+  instead of every dependent feature failing separately.
+- **Clipboard writes reported a timeout on success** — `wl-copy` forks a
+  process that owns the selection, and it inherited the stderr *pipe*, so
+  `subprocess.run` waited out its full timeout on a copy that had already
+  worked.
+
 ### Would Require New Dependencies
 - **WebDriver playback control** — Chromium or Firefox WebDriver to control videos (heavy, user's browser)
 - **Native video metadata** — ffprobe/mediainfo for local videos (new source type)
 - **Text-to-speech feedback** — espeak or pyttsx3 (invasive for a remote control)
 
 ### Would Require User Input Channel
-- **Arbitrary text input** — phrase parsing, NLP, or a text form (vt's design: pre-configured commands only)
+- **Phrase parsing / NLP** — vt's design stays: concrete controls, no guessing.
+  (Typing literal text at the PC is now supported, but it is a keyboard, not an
+  interpreter -- the phone sends characters, vt does not read them.)
 - **Multi-step workflows** — "search for X, then play the second result" (would need state machine)
 
-### Would Require X11-Only Features
-- **Screenshot capture** — scrot/ImageMagick (Wayland-incompatible, X11 only)
-- **Window arrangement** — wmctrl (X11 only, window positions meaningless on Wayland)
+### Still Missing (see FEATURE_PARITY.md)
+- **Screen mirroring / screenshots** — needs the portal or PipeWire screencast;
+  scrot and ImageMagick are X11-only
+- **Find-my-phone / ring** — needs a persistent phone-side connection
+  (WebSocket), not the 1 Hz poll the UI is built on
+- **Phone battery on the PC** — same reverse channel
+- **Per-app volume mixer** — wpctl can do it; the snapshot has no per-app node model yet
 
 ## Known Issues (Won't Fix / By Design)
 
@@ -79,7 +119,7 @@
 
 ## Testing Checklist
 
-- [x] 97 unit tests passing
+- [x] 270 unit tests passing
 - [x] YouTube search via module backend (venv)
 - [x] YouTube search via CLI backend (system Python with yt-dlp on PATH)
 - [x] YouTube search error messages (missing yt-dlp, network timeout, etc.)
@@ -130,9 +170,9 @@ pip install qrcode[pil]
 
 ## Stable Release Readiness
 
-**Current:** Released as `v3.0.0` on 2026-08-23 — design frozen  
+**Current:** `v3.1.0` on PyPI — design frozen  
 **Blockers:** None — all known issues are documented limitations or by-design trade-offs  
-**Test status:** 97 tests, all passing  
+**Test status:** 287 tests, all passing  
 **CI/CD:** GitHub Actions, Python 3.11–3.13, with and without optional deps
 
 The v2 tree (`client/`, `server/`, its OpenSpec specs, and the v2 root test

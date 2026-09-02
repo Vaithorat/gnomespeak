@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from vt.commands import CommandsConfig
+from vt.shell import SHELL_BUS_NAME, SHELL_OBJECT_PATH
 
 try:
     import dbus
@@ -26,10 +27,6 @@ try:
 except ImportError:
     dbus = None
     HAS_DBUS = False
-
-
-SHELL_BUS_NAME = "org.gnome.Shell.Extensions.VoiceTalk"
-SHELL_OBJECT_PATH = "/org/gnome/Shell/Extensions/VoiceTalk"
 
 # D-Bus names that mean "nobody is offering this service", as opposed to a
 # service that answered with an error of its own.
@@ -162,7 +159,12 @@ def execute_action(target_id: str, action_id: str, value: Optional[float] = None
 
     if kind == "system":
         if target_spec == "audio":
-            return execute_audio_action(action_id, value)
+            return execute_audio_action("@DEFAULT_AUDIO_SINK@", action_id, value)
+        if target_spec == "mic":
+            return execute_audio_action("@DEFAULT_AUDIO_SOURCE@", action_id, value)
+        if target_spec == "wifi":
+            from vt.sources.network import execute as execute_network_action
+            return execute_network_action(target_spec, action_id)
         from vt.sources.system import execute as execute_system_action
         return execute_system_action(target_spec, action_id, value)
     elif kind == "bluetooth":
@@ -191,15 +193,15 @@ def execute_action(target_id: str, action_id: str, value: Optional[float] = None
     return {"ok": False, "message": f"Unknown target kind: {kind}"}
 
 
-def execute_audio_action(action_id: str, value: Optional[float] = None) -> dict:
-    """Control the default sink through wpctl."""
+def execute_audio_action(node: str, action_id: str, value: Optional[float] = None) -> dict:
+    """Control a wpctl node -- the default sink or the default source."""
     try:
         if action_id == "volume":
             if value is None:
                 return {"ok": False, "message": "Volume action requires a value"}
             vol = max(0.0, min(1.0, value))
             subprocess.run(
-                ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", str(vol)],
+                ["wpctl", "set-volume", node, str(vol)],
                 check=True,
                 capture_output=True,
                 timeout=2,
@@ -207,7 +209,7 @@ def execute_audio_action(action_id: str, value: Optional[float] = None) -> dict:
             return {"ok": True, "message": f"Volume set to {int(vol * 100)}%"}
         elif action_id == "mute":
             subprocess.run(
-                ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+                ["wpctl", "set-mute", node, "toggle"],
                 check=True,
                 capture_output=True,
                 timeout=2,

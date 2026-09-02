@@ -31,6 +31,7 @@ def routed(monkeypatch):
     "target_id,action_id,expected",
     [
         ("system:audio", "mute", "audio"),
+        ("system:mic", "mute", "audio"),
         ("mpris:org.mpris.MediaPlayer2.firefox", "play_pause", "mpris"),
         ("command:lock", "run", "command"),
         ("window:42", "focus", "window"),
@@ -61,7 +62,7 @@ def test_mpris_target_id_is_not_double_prefixed(routed):
 
 
 def test_volume_requires_a_value():
-    assert actions.execute_audio_action("volume", None)["ok"] is False
+    assert actions.execute_audio_action("@DEFAULT_AUDIO_SINK@", "volume", None)["ok"] is False
 
 
 def test_volume_is_clamped(monkeypatch):
@@ -69,10 +70,19 @@ def test_volume_is_clamped(monkeypatch):
     monkeypatch.setattr(
         actions.subprocess, "run", lambda argv, **kw: seen.update(argv=argv)
     )
-    actions.execute_audio_action("volume", 4.2)
+    actions.execute_audio_action("@DEFAULT_AUDIO_SINK@", "volume", 4.2)
     assert seen["argv"][-1] == "1.0"
-    actions.execute_audio_action("volume", -3)
+    actions.execute_audio_action("@DEFAULT_AUDIO_SINK@", "volume", -3)
     assert seen["argv"][-1] == "0.0"
+
+
+def test_mic_volume_targets_the_source_node(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(
+        actions.subprocess, "run", lambda argv, **kw: seen.update(argv=argv)
+    )
+    actions.execute_audio_action("@DEFAULT_AUDIO_SOURCE@", "volume", 0.5)
+    assert seen["argv"] == ["wpctl", "set-volume", "@DEFAULT_AUDIO_SOURCE@", "0.5"]
 
 
 def test_non_numeric_window_id_is_rejected():

@@ -8,7 +8,7 @@ running Steam client, or a machine with a battery.
 import pytest
 
 import vt.actions as actions
-from vt.sources import steam, streaming, system, workspaces
+from vt.sources import network, steam, streaming, system, workspaces
 
 
 # --- Steam library parsing --------------------------------------------------
@@ -260,6 +260,8 @@ def test_a_machine_without_a_battery_reports_nothing(monkeypatch):
 def test_do_not_disturb_offers_the_half_that_applies(monkeypatch):
     monkeypatch.setattr(system, "battery_summary", lambda: "")
     monkeypatch.setattr(system, "_brightness", lambda: -1)
+    monkeypatch.setattr(system, "_night_light_on", lambda: None)
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
 
     monkeypatch.setattr(system, "_banners_shown", lambda: True)
     targets = {t.id: t for t in system.get_system_targets()}
@@ -275,6 +277,8 @@ def test_no_backlight_means_no_display_row(monkeypatch):
     monkeypatch.setattr(system, "battery_summary", lambda: "")
     monkeypatch.setattr(system, "_banners_shown", lambda: None)
     monkeypatch.setattr(system, "_brightness", lambda: -1)
+    monkeypatch.setattr(system, "_night_light_on", lambda: None)
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
 
     assert [t.id for t in system.get_system_targets()] == ["system:power"]
 
@@ -284,6 +288,8 @@ def test_shutdown_and_restart_require_confirmation(monkeypatch):
     monkeypatch.setattr(system, "battery_summary", lambda: "")
     monkeypatch.setattr(system, "_brightness", lambda: -1)
     monkeypatch.setattr(system, "_banners_shown", lambda: None)
+    monkeypatch.setattr(system, "_night_light_on", lambda: None)
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
 
     power = system.get_system_targets()[0]
     kinds = {a.id: a.kind for a in power.actions}
@@ -302,6 +308,130 @@ def test_unknown_system_target_is_named():
     result = system.execute("nosuchthing", "lock", None)
     assert result["ok"] is False
     assert "nosuchthing" in result["message"]
+
+
+# --- System: night light -----------------------------------------------------
+
+def test_night_light_row_appears_without_a_backlight(monkeypatch):
+    """A desktop monitor has no backlight, but can still have night light."""
+    monkeypatch.setattr(system, "battery_summary", lambda: "")
+    monkeypatch.setattr(system, "_banners_shown", lambda: None)
+    monkeypatch.setattr(system, "_brightness", lambda: -1)
+    monkeypatch.setattr(system, "_night_light_on", lambda: False)
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
+
+    targets = {t.id: t for t in system.get_system_targets()}
+    display = targets["system:display"]
+    assert [a.id for a in display.actions] == ["night_light_on"]
+    assert display.status == ""
+
+
+def test_night_light_action_flips_with_state(monkeypatch):
+    monkeypatch.setattr(system, "battery_summary", lambda: "")
+    monkeypatch.setattr(system, "_banners_shown", lambda: None)
+    monkeypatch.setattr(system, "_brightness", lambda: -1)
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
+
+    monkeypatch.setattr(system, "_night_light_on", lambda: True)
+    targets = {t.id: t for t in system.get_system_targets()}
+    assert [a.id for a in targets["system:display"].actions] == ["night_light_off"]
+    assert targets["system:display"].status == "night light"
+
+
+# --- System: dark theme -------------------------------------------------------
+
+def test_theme_row_offers_the_opposite_mode(monkeypatch):
+    monkeypatch.setattr(system, "battery_summary", lambda: "")
+    monkeypatch.setattr(system, "_banners_shown", lambda: None)
+    monkeypatch.setattr(system, "_brightness", lambda: -1)
+    monkeypatch.setattr(system, "_night_light_on", lambda: None)
+
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: True)
+    targets = {t.id: t for t in system.get_system_targets()}
+    assert [a.id for a in targets["system:display"].actions] == ["theme_light"]
+    assert targets["system:display"].status == "dark"
+
+    monkeypatch.setattr(system, "_theme_is_dark", lambda: False)
+    targets = {t.id: t for t in system.get_system_targets()}
+    assert [a.id for a in targets["system:display"].actions] == ["theme_dark"]
+    assert targets["system:display"].status == "light"
+
+
+def test_theme_execute_calls_gsettings(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        system.subprocess, "run",
+        lambda argv, **kw: calls.append(argv) or type("R", (), {"returncode": 0, "stderr": ""})(),
+    )
+    result = system.execute("display", "theme_dark", None)
+    assert result["ok"] is True
+    assert calls[0] == ["gsettings", "set", system._THEME_SCHEMA,
+                         system._THEME_KEY, system._THEME_DARK]
+
+    result = system.execute("display", "theme_light", None)
+    assert calls[1] == ["gsettings", "set", system._THEME_SCHEMA,
+                         system._THEME_KEY, system._THEME_LIGHT]
+
+
+def test_night_light_execute_calls_gsettings(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        system.subprocess, "run",
+        lambda argv, **kw: calls.append(argv) or type("R", (), {"returncode": 0, "stderr": ""})(),
+    )
+    result = system.execute("display", "night_light_on", None)
+    assert result["ok"] is True
+    assert calls[0] == ["gsettings", "set", system._NIGHT_LIGHT_SCHEMA,
+                         system._NIGHT_LIGHT_KEY, "true"]
+
+
+# --- System: keep awake -------------------------------------------------------
+
+class _FakeInhibitManager:
+    def __init__(self):
+        self.inhibited = False
+        self.cookie = 42
+
+    def Inhibit(self, app_id, xid, reason, flags, timeout=None):
+        self.inhibited = True
+        return self.cookie
+
+    def Uninhibit(self, cookie, timeout=None):
+        assert int(cookie) == self.cookie
+        self.inhibited = False
+
+
+@pytest.fixture
+def fake_session_manager(monkeypatch):
+    manager = _FakeInhibitManager()
+    fake_dbus = type("FakeDbus", (), {
+        "SessionBus": lambda: type("Bus", (), {
+            "get_object": lambda self, *a, **k: object(),
+        })(),
+        "Interface": lambda obj, iface: manager,
+        "UInt32": lambda v: v,
+    })
+    monkeypatch.setattr(system, "dbus", fake_dbus)
+    monkeypatch.setattr(system, "_awake_cookie", None)
+    yield manager
+    monkeypatch.setattr(system, "_awake_cookie", None)
+
+
+def test_keep_awake_inhibits_and_releases(fake_session_manager):
+    result = system.execute("power", "awake_on", None)
+    assert result["ok"] is True
+    assert fake_session_manager.inhibited is True
+
+    result = system.execute("power", "awake_off", None)
+    assert result["ok"] is True
+    assert fake_session_manager.inhibited is False
+
+
+def test_keep_awake_without_dbus_reports_unavailable(monkeypatch):
+    monkeypatch.setattr(system, "dbus", None)
+    result = system.execute("power", "awake_on", None)
+    assert result["ok"] is False
+    assert "dbus" in result["message"]
 
 
 # --- Dispatch ---------------------------------------------------------------
@@ -333,10 +463,22 @@ def test_system_audio_still_routes_to_audio(monkeypatch):
     """system: gained siblings; audio must not fall through to the new branch."""
     called = []
     monkeypatch.setattr(actions, "execute_audio_action",
-                        lambda aid, value: called.append(aid) or {"ok": True, "message": ""})
+                        lambda node, aid, value: called.append((node, aid)) or {"ok": True, "message": ""})
 
     assert actions.execute_action("system:audio", "mute")["ok"] is True
-    assert called == ["mute"]
+    assert called == [("@DEFAULT_AUDIO_SINK@", "mute")]
+
+    assert actions.execute_action("system:mic", "mute")["ok"] is True
+    assert called[-1] == ("@DEFAULT_AUDIO_SOURCE@", "mute")
+
+
+def test_system_wifi_routes_to_network(monkeypatch):
+    called = []
+    monkeypatch.setattr(network, "execute",
+                        lambda spec, aid: called.append((spec, aid)) or {"ok": True, "message": ""})
+
+    assert actions.execute_action("system:wifi", "wifi_off")["ok"] is True
+    assert called == [("wifi", "wifi_off")]
 
 
 def test_unknown_steam_action_is_refused():
@@ -434,3 +576,73 @@ def test_an_older_extension_is_told_apart_from_a_broken_one(monkeypatch):
     assert result["ok"] is False
     assert "install-extension" in result["message"]
     assert "Minimize" in result["message"]
+
+
+# --- Network: Wi-Fi radio -----------------------------------------------------
+
+def test_no_networkmanager_means_no_wifi_row(monkeypatch):
+    monkeypatch.setattr(network, "_properties", lambda: None)
+    assert network.get_network_targets() == []
+
+
+def test_wifi_off_shows_a_turn_on_action(monkeypatch):
+    monkeypatch.setattr(network, "_properties", lambda: {"WirelessEnabled": False})
+    targets = network.get_network_targets()
+    assert [a.id for a in targets[0].actions] == ["wifi_on"]
+    assert targets[0].status == "off"
+
+
+def test_wifi_on_without_connectivity_is_not_connected(monkeypatch):
+    monkeypatch.setattr(network, "_properties",
+                        lambda: {"WirelessEnabled": True, "Connectivity": 2})
+    targets = network.get_network_targets()
+    assert [a.id for a in targets[0].actions] == ["wifi_off"]
+    assert targets[0].status == "on"
+
+
+def test_wifi_full_connectivity_is_reported_connected(monkeypatch):
+    monkeypatch.setattr(network, "_properties",
+                        lambda: {"WirelessEnabled": True, "Connectivity": 4})
+    targets = network.get_network_targets()
+    assert targets[0].status == "connected"
+
+
+class _FakeNMProps:
+    def __init__(self):
+        self.calls = []
+
+    def Set(self, iface, key, value, timeout=None):
+        self.calls.append((iface, key, bool(value)))
+
+
+@pytest.fixture
+def fake_nm(monkeypatch):
+    props = _FakeNMProps()
+    fake_dbus = type("FakeDbus", (), {
+        "SystemBus": lambda: type("Bus", (), {
+            "get_object": lambda self, *a, **k: object(),
+        })(),
+        "Interface": lambda obj, iface: props,
+        "Boolean": lambda v: v,
+    })
+    monkeypatch.setattr(network, "dbus", fake_dbus)
+    return props
+
+
+def test_wifi_toggle_sets_the_networkmanager_property(fake_nm):
+    result = network.execute("wifi", "wifi_off")
+    assert result["ok"] is True
+    assert fake_nm.calls == [(network.NM_IFACE, "WirelessEnabled", False)]
+
+
+def test_wifi_without_dbus_reports_unavailable(monkeypatch):
+    monkeypatch.setattr(network, "dbus", None)
+    result = network.execute("wifi", "wifi_on")
+    assert result["ok"] is False
+    assert "dbus" in result["message"]
+
+
+def test_unknown_network_action_is_named(fake_nm):
+    result = network.execute("wifi", "reboot")
+    assert result["ok"] is False
+    assert "reboot" in result["message"]

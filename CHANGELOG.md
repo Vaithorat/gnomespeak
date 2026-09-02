@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+<<<<<<< Updated upstream
 - **Window control on COSMIC** (`sources/cosmic_windows.py`) — Focus,
   Minimize, Maximize, and Close now work under COSMIC (System76's compositor)
   without the GNOME extension, by talking its own
@@ -20,6 +21,67 @@
   a bundled static XKB keymap rather than a new `libxkbcommon` dependency.
   See `COSMIC_INPUT_PARITY.md` for the design and the Phase 0 spike that
   confirmed an ordinary client is allowed to do this here.
+=======
+- **`make dev` sets the machine up by itself.** It now installs missing system
+  packages (`scripts/setup-system.sh`, which asks for sudo only when something
+  is actually missing and supports apt, dnf, pacman and zypper) and installs or
+  repairs the GNOME extension (`vt install-extension --if-needed`) before
+  starting the server. Both steps are idempotent, cost milliseconds when there
+  is nothing to do, and cannot fail the run: an unknown distro, no sudo, or no
+  GNOME at all still leaves a server that starts, with each unavailable feature
+  reporting its own absence. `SKIP_SYSTEM=1` opts out; `YES=1` never prompts.
+- **The startup banner says when the extension is not loaded**, once, instead of
+  leaving window and touchpad control to fail one tap at a time.
+- **Touchpad, keyboard and presentation remote** — the phone drives the pointer
+  (drag to move, tap to click, two fingers to scroll, two-finger tap to
+  right-click), types literal text into whatever has focus, and sends key
+  chords, including a Prev/Next/F5/Escape row for slides. New extension
+  methods: `Pointer`, `Click`, `Scroll`, `TypeText`, `Keys`. Under Wayland only
+  the compositor may synthesize input, so this is the only route that works;
+  `POST /api/input` carries it, outside `/api/do` because a trackpad has no
+  target and sends about twenty deltas a second.
+- **Clipboard sync** — read the PC's clipboard on the phone and push text back,
+  through `wl-clipboard` on Wayland or `xclip`/`xsel` on X11
+  (`GET`/`POST /api/clipboard`).
+- **Notification mirroring** — desktop notifications appear on the phone as
+  they arrive, read by monitoring the session bus through `dbus-monitor`
+  (`GET /api/notifications`). Read-only by design.
+- **File transfer** — send a file from the phone to `~/Downloads/GnomeSpeak`,
+  open it there with one tap, or pull one back (`POST /api/upload`,
+  `GET /api/files`, `GET /api/files/<name>`, `POST /api/files/open`). Uploads
+  stream to disk with a 100 MB cap; names are reduced to something that cannot
+  express a path, and downloads are resolved against the directory's real path
+  so a symlink inside it cannot lead out.
+
+### Fixed
+- **`vt doctor` always reported the GNOME extension missing.** The rename to
+  GnomeSpeak updated the bus name in `vt/cli.py` alone, leaving doctor probing
+  `org.gnome.Shell.Extensions.GnomeSpeak` while everything else — including the
+  extension — used `…Extensions.VoiceTalk`. The bus name, object path, uuid and
+  expected method set now live once in `vt/shell.py`.
+- **A pre-rename extension install was left dangling and silent.** An install
+  from before the rename is a `voicetalk@local` symlink into a directory that no
+  longer exists; GNOME Shell drops such an extension without a word, taking
+  window, workspace and browser-tab control with it. `vt install-extension`
+  removes it, drops it from `org.gnome.shell enabled-extensions`, and repairs a
+  dangling `gnomespeak@local` symlink instead of calling it "already installed".
+- **A freshly installed extension could not be enabled.** The running shell only
+  scans the extensions directory at session start, so `gnome-extensions enable`
+  answered "does not exist" — and the printed fallback was that same command.
+  The uuid is written to the dconf enabled list instead, which takes effect at
+  the next login.
+- **Extension version skew is now one line, not one failure per action.**
+  `vt doctor` introspects the live extension and names the features a stale
+  build cannot serve.
+- **A missing extension is visible on the phone.** `system:extension` is a
+  snapshot target, shown once at the top of the System tab and on the touchpad
+  screen, rather than four features failing separately.
+- **Clipboard writes reported a timeout on success.** `wl-copy` forks a process
+  that owns the selection and inherited the stderr pipe, so `subprocess.run`
+  waited out its full timeout on a copy that had already worked.
+
+### Added (earlier in this cycle)
+>>>>>>> Stashed changes
 - **Wayland YouTube playback keys** — play/pause, 10s seek, volume, mute,
   **fullscreen** and close tab now work under Wayland. They are delivered
   through the GNOME extension or (on COSMIC) `sources/cosmic_input.py` --

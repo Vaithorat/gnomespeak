@@ -2,8 +2,8 @@
    from hostile metadata, so the escaping can be asserted from a test rather
    than by reading the source.
 
-   argv[3] picks the view: "category" (default), "installed", "youtube" or
-   "home". */
+   argv[3] picks the view: "category" (default), "installed", "youtube",
+   "home", "notifications" or "touchpad". */
 
 import fs from "node:fs";
 import vm from "node:vm";
@@ -41,6 +41,8 @@ const sandbox = {
   navigator: { userAgent: "node", vibrate() {} },
   localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   window: {
+    addEventListener() {},
+    isSecureContext: false,
     location: {
       pathname: "/",
       search: "",
@@ -68,7 +70,10 @@ vm.runInContext(script + "\n;globalThis.__renderCategory = renderCategory;" +
   "globalThis.__renderHome = renderHome;" +
   "globalThis.__signature = () => viewSignature();" +
   "globalThis.__state = (s) => { state = s; };" +
-  "globalThis.__rowsOf = (el) => el.innerHTML;", sandbox);
+  "globalThis.__rowsOf = (el) => el.innerHTML;" +
+  "globalThis.__renderNotifList = renderNotifList;" +
+  "globalThis.__setNotifs = (n) => { notifs = n; };" +
+  "globalThis.__renderTouchpad = renderTouchpad;", sandbox);
 
 const hostile = "<img src=x onerror=alert(1)>";
 
@@ -185,4 +190,46 @@ if (mode === "home") {
   const out = el("out");
   sandbox.__renderHome(out);
   console.log(nodes.homeResults.innerHTML);
+}
+
+if (mode === "notifications") {
+  // Notification text is written by whatever app raised it -- a browser page
+  // title, a chat message -- so it is as untrusted as a window title, and it
+  // lands in the same row builder.
+  sandbox.__setNotifs([
+    {
+      seq: 1,
+      ts: Date.now() / 1000,
+      app: `App ${hostile}`,
+      summary: `Summary ${hostile}`,
+      body: `Body ${hostile}`,
+    },
+  ]);
+  nodes.notifList = el("notifList");
+  sandbox.__renderNotifList();
+  console.log(nodes.notifList.innerHTML);
+}
+
+if (mode === "touchpad") {
+  // Without the extension the touchpad cannot work at all, so the screen says
+  // so at the top instead of failing one tap at a time.
+  sandbox.__state({
+    targets: [
+      {
+        id: "system:extension",
+        kind: "system",
+        title: "GNOME extension not loaded",
+        subtitle: "No window, workspace, touchpad or typing control",
+        icon: "\u26a0",
+        status: "missing",
+        note: `Install it with vt install-extension ${hostile}`,
+        actions: [],
+      },
+    ],
+  });
+  sandbox.__nav(["input:touchpad"]);
+  const out = el("out");
+  sandbox.__renderTouchpad(out);
+  console.log(out.innerHTML);
+  console.log("SIGNATURE:" + sandbox.__signature());
 }

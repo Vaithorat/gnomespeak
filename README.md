@@ -15,6 +15,10 @@ Control your Linux PC from your phone via a simple web interface. See what's pla
 - **YouTube playback control** — When a YouTube video plays in your browser, control it from the phone: play/pause, 10s seek, volume, mute, **fullscreen** and close tab. Delivered through the GNOME extension, so it works under Wayland; `xdotool`/`wmctrl` are only a fallback for non-GNOME X11 sessions.
 - **Up next** — Tap "Up next" on the YouTube screen to get what to watch after the video that is already playing, without typing a search for it.
 - **Window and workspace control** — Focus, minimize, maximize, move a window to another workspace, and switch workspaces from the phone.
+- **Touchpad and keyboard** — The phone is a trackpad: drag to move the pointer, tap to click, two fingers to scroll, two-finger tap to right-click. Type into whatever has focus, send key chords, and drive a slide deck with a Prev/Next/F5/Escape row. Delivered through the GNOME extension, so it works under Wayland.
+- **Clipboard sync** — Read the PC's clipboard on the phone, or push text the other way. Backed by `wl-clipboard` on Wayland and `xclip`/`xsel` on X11.
+- **Notification mirroring** — Desktop notifications appear on the phone as they arrive, read-only, so a PC across the room stops being something you have to walk to.
+- **File transfer** — Send a photo or a document from the phone to `~/Downloads/GnomeSpeak`, open it on the PC with one tap, or pull a file back down to the phone.
 - **Streaming shortcuts** — One tap for Netflix, Spotify, Prime Video, Disney+, JioHotstar, Twitch, Max and YouTube. Opens the desktop app when one is installed, the browser otherwise. Add your own (a Jellyfin box, say) in `~/.config/gnomespeak/streaming.toml`.
 - **Steam games** — Installed games are read from Steam's own library manifests and appear in the app search, ready to launch.
 - **Bluetooth** — Turn the radio on and off, and connect or disconnect paired devices.
@@ -44,10 +48,18 @@ curl -fsSL https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/install.s
 ```
 
 This script:
-- Detects your Linux distro (Debian/Ubuntu or Fedora)
-- Installs system dependencies (`python3-dbus`, `python3-gi`, `xdotool`, `wmctrl`)
+- Detects your Linux distro (Debian/Ubuntu, Fedora, Arch or openSUSE)
+- Installs the system dependencies it finds missing, asking for sudo only then
+  (`python3-dbus`, `python3-gi`, `wl-clipboard`, `xclip`, `dbus-monitor`,
+  `wireplumber`, `xdg-user-dirs`, plus `xdotool`/`wmctrl` on X11)
 - Installs GnomeSpeak from PyPI
+- Installs the GNOME extension, so window and touchpad control work at your
+  next login
 - Prints next steps
+
+Nothing here is fatal. A distro it does not recognise, a machine with no sudo,
+or one that is not running GNOME still ends up with a server it can start —
+just with fewer features, each of which says so in `vt doctor` and on the phone.
 
 **After installation:**
 
@@ -58,12 +70,16 @@ This script:
 
    All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run VoiceTalk.
 
-2. (Optional) **Install the window control extension**
+2. **Log out and back in**
+
+   GNOME Shell only loads extensions at session start under Wayland, so window
+   control (`Focus`, `Close`, minimize/maximize, workspaces), the touchpad,
+   typing and the presentation remote start working after the next login. To
+   install or repair the extension by hand:
+
    ```bash
    vt install-extension
    ```
-
-   This enables the `Focus` and `Close` buttons for open windows. On Wayland, you **must log out and log back in** for the extension to activate.
 
 3. (Optional) **Configure custom commands**
    ```bash
@@ -84,27 +100,26 @@ For development or to work on the code:
    cd gnomespeak
    ```
 
-2. Install system dependencies (same as above)
+2. Start the server
    ```bash
-   sudo apt-get install python3-dbus python3-gi xdotool wmctrl
+   make dev
    ```
 
-3. Set up development environment
-   ```bash
-   make setup
-   ```
+   That is the whole setup. `make dev` installs any missing system packages
+   (asking for sudo at that point, and only then), builds the venv, installs the
+   package in editable mode with the dev/test extras, installs the GNOME
+   extension if it is missing or broken, and starts the server. Every step is
+   idempotent, so the second run is fast and silent, and none of them can fail
+   the run — a missing package means a missing feature, not a missing server.
 
-   Creates a venv and installs the package in editable mode with dev/test extras.
+   To skip the package step (an air-gapped box, or one where you manage
+   packages yourself): `make dev SKIP_SYSTEM=1`. To check what it would install
+   without installing anything: `scripts/setup-system.sh --check`.
 
-4. Run tests and linting
+3. Run tests and linting
    ```bash
    make test
    make lint
-   ```
-
-5. Start the development server
-   ```bash
-   make dev
    ```
 
 ## Quick Start
@@ -158,7 +173,7 @@ For development or to work on the code:
 | YouTube Search | Find and play YouTube videos from the phone UI (with `yt-dlp` installed) |
 | `vt allow-autoplay [--status] [--revert] [--restart]` | Let the browser start videos opened from the phone. Writes `media.autoplay.default` into the Firefox profile's `user.js` — the same setting as Settings → Privacy & Security → Autoplay → Allow Audio and Video. Takes effect on the next Firefox start; `--restart` does that for you. |
 | `vt doctor` | Run preflight checks. |
-| `vt install-extension` | Install the GNOME Shell window control extension. |
+| `vt install-extension` | Install the GNOME Shell extension (windows, workspaces, pointer, typing). Cleans up a pre-rename `voicetalk@local` install and enables the new one for the next login. |
 
 ## HTTP API
 
@@ -195,7 +210,35 @@ GET /api/youtube[?q=search+terms]
 POST /api/do
   ← {"target": "kind:id", "action": "action-id", "value": float?}
   → {"ok": bool, "message": "..."}
+
+GET  /api/clipboard
+  → {ok, text, message, tool}
+
+POST /api/clipboard
+  ← {text}
+  → {ok, message}
+
+POST /api/input
+  ← {"op": "move",   "dx": int, "dy": int}      pointer, relative
+    {"op": "scroll", "dx": int, "dy": int}      pixels of thumb travel
+    {"op": "click",  "button": "left|middle|right", "double": bool}
+    {"op": "type",   "text": "..."}             into whatever has focus
+    {"op": "keys",   "keys": "ctrl+shift+t"}    comma-separated chords
+  → {ok, message}
+
+GET  /api/notifications?since=<seq>
+  → {ok, entries: [{seq, ts, app, icon, summary, body}], error, running}
+
+GET  /api/files                → {files: [{name, size, mtime}], dir}
+POST /api/upload               multipart, field name "file" → {ok, name, size}
+GET  /api/files/<name>         → the file itself
+POST /api/files/open           ← {name} → {ok, message}
 ```
+
+Remote input has an endpoint of its own rather than being an action: a trackpad
+has no target in the snapshot and sends about twenty deltas a second, so routing
+it through `/api/do` would mean a snapshot lookup and an audit line per pointer
+movement. Typing and key chords *are* audited; pointer motion is not.
 
 Installed apps are deliberately not part of `/api/state`: there are hundreds of
 them and they change about once a week, so they would dwarf the state that
@@ -261,10 +304,32 @@ confirm = true              # Require double-tap
 - Check the server logs: `vt serve` prints errors to stdout.
 - Ensure your phone and PC are on the same network (or route exists).
 
-**Window actions not working:**
-- Run `vt install-extension` and log out/in.
+**Window actions, the touchpad or typing not working:**
+- Run `vt doctor`. The **Extension** line distinguishes never installed,
+  installed-but-not-yet-loaded, and an install whose symlink target is gone.
+- Run `vt install-extension` and log out/in. It also removes a pre-rename
+  `voicetalk@local` install, which after the rename to GnomeSpeak is a symlink
+  into a directory that no longer exists — GNOME Shell drops such an extension
+  without a word, so every window and keystroke action stops at once.
 - Check: `gnome-extensions list | grep gnomespeak` should show `gnomespeak@local`.
-- Check D-Bus: `gdbus call --session --dest org.gnome.Shell.Extensions.GnomeSpeak --object-path /org/gnome/Shell/Extensions/GnomeSpeak --method org.gnome.Shell.Extensions.GnomeSpeak.List`
+- Check D-Bus (note the bus name keeps its original spelling; see ARCHITECTURE.md):
+  `gdbus call --session --dest org.gnome.Shell.Extensions.VoiceTalk --object-path /org/gnome/Shell/Extensions/VoiceTalk --method org.gnome.Shell.Extensions.VoiceTalk.List`
+
+**`make dev` asked for my sudo password:**
+- Only when a system package it needs is missing. It prints the exact command
+  before running it, and asks for nothing when everything is already present.
+- See what it would install without installing it: `scripts/setup-system.sh --check`.
+- Never install packages: `make dev SKIP_SYSTEM=1`. The server still starts; the
+  features backed by whatever is missing report their own absence.
+
+**Clipboard sync does nothing:**
+- It needs `wl-clipboard` on Wayland, or `xclip`/`xsel` on X11. `vt doctor`
+  names the one your session wants.
+
+**The notifications screen stays empty:**
+- It needs `dbus-monitor` (`sudo apt install dbus-bin`). Only notifications
+  that arrive *after* the screen is first opened are shown — there is no
+  backlog to read on a desktop.
 
 **Commands not executing:**
 - Check `~/.config/gnomespeak/commands.toml` exists and parses: `python3 -c "from vt.commands import CommandsConfig; c = CommandsConfig(); print(c.get_errors())"`.
@@ -367,6 +432,7 @@ gnomespeak/
 │   ├── extension.js            # D-Bus window, workspace and key interface
 ├── Makefile                    # make dev / setup / test / doctor
 ├── scripts/envreport.py        # backs `make env`
+├── scripts/setup-system.sh     # system packages, by capability not package list
 ├── pyproject.toml
 ├── commands.toml.example
 ├── README.md
@@ -381,7 +447,9 @@ needs to, so there is no activate step and no ordering to remember.
 | Target | What it does |
 |--------|--------------|
 | `make dev` | Set up if needed, then start the server. **Start here.** |
-| `make setup` | Create `venv/` and install deps. Idempotent; re-runs only when `pyproject.toml` changes. |
+| `make setup` | System packages, `venv/`, Python deps, GNOME extension, git hooks. Idempotent; the Python step re-runs only when `pyproject.toml` changes. |
+| `make system` | Just the system packages (asks for sudo only if something is missing). |
+| `make extension` | Just the GNOME extension — installs or repairs it, no-op when healthy. |
 | `make test` | Run the pytest suite (`make test ARGS="-x -k mpris"`). |
 | `make doctor` | Preflight checks — D-Bus, PipeWire, port, extension, config. |
 | `make status` / `make commands` / `make apps` | CLI passthroughs. |
@@ -392,7 +460,9 @@ needs to, so there is no activate step and no ordering to remember.
 | `make reset` | Delete the venv and rebuild from scratch (~10s). |
 
 Options apply to `make dev`: `HOST=0.0.0.0`, `PORT=9000`, `NO_TOKEN=1`, `OPEN=1`,
-and `ARGS="..."` for anything else.
+and `ARGS="..."` for anything else. `SKIP_SYSTEM=1` leaves system packages
+alone; `YES=1` never prompts (for CI, which has nobody to type a sudo
+password).
 
 ### Why make, and not `python3 -m vt serve`
 

@@ -47,6 +47,25 @@ _BATTERY_STATE = {
 _DND_SCHEMA = "org.gnome.desktop.notifications"
 _DND_KEY = "show-banners"
 
+_NIGHT_LIGHT_SCHEMA = "org.gnome.settings-daemon.plugins.color"
+_NIGHT_LIGHT_KEY = "night-light-enabled"
+
+_THEME_SCHEMA = "org.gnome.desktop.interface"
+_THEME_KEY = "color-scheme"
+_THEME_DARK = "prefer-dark"
+_THEME_LIGHT = "default"
+
+GSM_BUS = "org.gnome.SessionManager"
+GSM_PATH = "/org/gnome/SessionManager"
+GSM_IFACE = "org.gnome.SessionManager"
+# Flag bits for Inhibit(); 8 = inhibit the idle/screensaver from firing.
+_INHIBIT_IDLE = 8
+
+# The cookie identifying our own inhibitor, so Uninhibit knows what to lift.
+# Module-level and unpersisted: a server restart drops the inhibitor along
+# with the process that would otherwise have to renew it anyway.
+_awake_cookie: int | None = None
+
 
 def _session_property(bus_name, path, iface, prop, default=None):
     """Read one D-Bus property, returning `default` if anything goes wrong."""
@@ -136,6 +155,34 @@ def _banners_shown() -> bool | None:
         return None
 
 
+def _night_light_on() -> bool | None:
+    """True when night light is on, None when GSettings is unreadable."""
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", _NIGHT_LIGHT_SCHEMA, _NIGHT_LIGHT_KEY],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() == "true"
+    except Exception:
+        return None
+
+
+def _theme_is_dark() -> bool | None:
+    """True when the GNOME color scheme prefers dark, None when unreadable."""
+    try:
+        result = subprocess.run(
+            ["gsettings", "get", _THEME_SCHEMA, _THEME_KEY],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        return _THEME_DARK in result.stdout
+    except Exception:
+        return None
+
+
 def get_system_targets() -> list[Target]:
     """Power, backlight and do-not-disturb controls."""
     targets = []
@@ -150,6 +197,8 @@ def get_system_targets() -> list[Target]:
         status=battery.split(" · ")[0] if battery else "ready",
         actions=[
             Action(id="lock", label="Lock screen"),
+            Action(id="awake_off" if _awake_cookie is not None else "awake_on",
+                   label="Let it sleep" if _awake_cookie is not None else "Keep awake"),
             Action(id="suspend", label="Suspend"),
             Action(id="restart", label="Restart", kind="confirm"),
             Action(id="shutdown", label="Shut down", kind="confirm"),
@@ -157,19 +206,38 @@ def get_system_targets() -> list[Target]:
     ))
 
     level = _brightness()
-    if level >= 0:
+    night_light = _night_light_on()
+    dark_theme = _theme_is_dark()
+    if level >= 0 or night_light is not None or dark_theme is not None:
+        actions_list = []
+        if level >= 0:
+            actions_list.extend([
+                Action(id="brightness", label=f"Brightness ({level}%)",
+                       kind="slider", value=level / 100),
+                Action(id="brightness_down", label="Dimmer"),
+                Action(id="brightness_up", label="Brighter"),
+            ])
+        if night_light is not None:
+            actions_list.append(Action(
+                id="night_light_off" if night_light else "night_light_on",
+                label="Night light off" if night_light else "Night light on",
+            ))
+        if dark_theme is not None:
+            actions_list.append(Action(
+                id="theme_light" if dark_theme else "theme_dark",
+                label="Light theme" if dark_theme else "Dark theme",
+            ))
+        status_bits = [f"{level}%"] if level >= 0 else []
+        if night_light:
+            status_bits.append("night light")
+        status_bits.append("dark" if dark_theme else "light" if dark_theme is not None else "")
         targets.append(Target(
             id="system:display",
             kind="system",
             title="Display",
             icon="☀",
-            status=f"{level}%",
-            actions=[
-                Action(id="brightness", label=f"Brightness ({level}%)",
-                       kind="slider", value=level / 100),
-                Action(id="brightness_down", label="Dimmer"),
-                Action(id="brightness_up", label="Brighter"),
-            ],
+            status=" · ".join(b for b in status_bits if b),
+            actions=actions_list,
         ))
 
     banners = _banners_shown()
@@ -258,6 +326,71 @@ def _set_brightness(value: float) -> dict:
         return {"ok": False, "message": f"Brightness unavailable: {detail}"}
 
 
+def _set_night_light(enabled: bool) -> dict:
+    try:
+        result = subprocess.run(
+            ["gsettings", "set", _NIGHT_LIGHT_SCHEMA, _NIGHT_LIGHT_KEY,
+             "true" if enabled else "false"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "message": (result.stderr or "gsettings failed").strip()}
+        return {"ok": True, "message": "Night light on" if enabled else "Night light off"}
+    except FileNotFoundError:
+        return {"ok": False, "message": "gsettings not found (install glib2 tools)"}
+    except Exception as e:
+        return {"ok": False, "message": f"Error: {e}"}
+
+
+def _set_theme(dark: bool) -> dict:
+    try:
+        result = subprocess.run(
+            ["gsettings", "set", _THEME_SCHEMA, _THEME_KEY,
+             _THEME_DARK if dark else _THEME_LIGHT],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return {"ok": False, "message": (result.stderr or "gsettings failed").strip()}
+        return {"ok": True, "message": "Dark theme" if dark else "Light theme"}
+    except FileNotFoundError:
+        return {"ok": False, "message": "gsettings not found (install glib2 tools)"}
+    except Exception as e:
+        return {"ok": False, "message": f"Error: {e}"}
+
+
+def _set_awake(enabled: bool) -> dict:
+    """Toggle a GNOME SessionManager idle inhibitor.
+
+    This is the same mechanism a video player uses to stop the screen locking
+    mid-playback -- session-scoped, no polkit prompt, works identically under
+    Wayland and X11 because it never touches input or the compositor.
+    """
+    global _awake_cookie
+    if dbus is None:
+        return {"ok": False, "message": "python-dbus is not importable; keep-awake is unavailable"}
+    try:
+        bus = dbus.SessionBus()
+        obj = bus.get_object(GSM_BUS, GSM_PATH, introspect=False)
+        manager = dbus.Interface(obj, GSM_IFACE)
+        if enabled:
+            if _awake_cookie is not None:
+                return {"ok": True, "message": "Already keeping the screen awake"}
+            cookie = manager.Inhibit(
+                "gnomespeak", dbus.UInt32(0), "Remote session active",
+                dbus.UInt32(_INHIBIT_IDLE), timeout=5,
+            )
+            _awake_cookie = int(cookie)
+            return {"ok": True, "message": "Keeping the screen awake"}
+        if _awake_cookie is None:
+            return {"ok": True, "message": "Screen can sleep normally"}
+        manager.Uninhibit(dbus.UInt32(_awake_cookie), timeout=5)
+        _awake_cookie = None
+        return {"ok": True, "message": "Screen can sleep normally"}
+    except Exception as e:
+        detail = str(e).strip().splitlines()[-1] if str(e).strip() else e.__class__.__name__
+        return {"ok": False, "message": f"Keep-awake unavailable: {detail}"}
+
+
 def _set_dnd(enabled: bool) -> dict:
     """Do-not-disturb is the absence of banners, which is a GSettings key."""
     try:
@@ -288,6 +421,10 @@ def execute(target_spec: str, action_id: str, value: float | None = None) -> dic
         if action_id == "battery":
             summary = battery_summary()
             return {"ok": bool(summary), "message": summary or "No battery on this machine"}
+        if action_id == "awake_on":
+            return _set_awake(True)
+        if action_id == "awake_off":
+            return _set_awake(False)
         return {"ok": False, "message": f"Unknown power action: {action_id}"}
 
     if target_spec == "display":
@@ -299,6 +436,14 @@ def execute(target_spec: str, action_id: str, value: float | None = None) -> dic
             return _step_brightness(True)
         if action_id == "brightness_down":
             return _step_brightness(False)
+        if action_id == "night_light_on":
+            return _set_night_light(True)
+        if action_id == "night_light_off":
+            return _set_night_light(False)
+        if action_id == "theme_dark":
+            return _set_theme(True)
+        if action_id == "theme_light":
+            return _set_theme(False)
         return {"ok": False, "message": f"Unknown display action: {action_id}"}
 
     if target_spec == "notifications":

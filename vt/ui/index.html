@@ -820,6 +820,94 @@
 
         .device-current .row-title { color: var(--accent); }
 
+        /* ---- touchpad, clipboard, files ----------------------------------- */
+
+        /* touch-action: none is what makes this a trackpad rather than a piece
+           of the page: without it the browser claims the gesture for scrolling
+           and the pointer never moves. */
+        .pad {
+            height: 44vh;
+            min-height: 200px;
+            border: 1px dashed var(--border);
+            border-radius: 18px;
+            background-color: var(--surface);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--muted);
+            font-size: 13px;
+            text-align: center;
+            padding: 0 24px;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        .pad.active { border-style: solid; border-color: var(--accent); background-color: var(--accent-soft); }
+        .pad-hint { pointer-events: none; line-height: 1.5; }
+
+        .btnrow { display: flex; gap: 8px; margin-top: 10px; }
+
+        .btnrow button {
+            flex: 1;
+            min-height: 48px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background-color: var(--surface);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btnrow button:active { background-color: var(--surface-2); }
+        .btnrow button.primary { background-color: var(--accent); border-color: var(--accent); color: #fff; }
+        .btnrow button[disabled] { opacity: 0.55; }
+
+        .keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+
+        .keypad button {
+            min-height: 52px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background-color: var(--surface);
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .keypad button:active { background-color: var(--surface-2); }
+        .keypad .wide { grid-column: span 3; }
+
+        textarea.box {
+            width: 100%;
+            min-height: 120px;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background-color: var(--surface);
+            color: var(--fg);
+            font-size: 15px;
+            font-family: inherit;
+            resize: vertical;
+        }
+
+        textarea.box:focus { outline: none; border-color: var(--accent); }
+
+        .fileinput { display: block; margin-top: 10px; font-size: 13.5px; color: var(--muted); }
+        .fileinput input { width: 100%; }
+
+        .progress-track {
+            height: 6px;
+            border-radius: 999px;
+            background-color: var(--surface-2);
+            overflow: hidden;
+            margin-top: 10px;
+        }
+
+        .progress-track > span { display: block; height: 100%; background-color: var(--accent); width: 0; }
+
+        .notif-body { white-space: normal; }
+
         /* Utility classes rather than style="" attributes: the page ships a
            nonce-only style-src, which blocks inline style attributes too. */
         .wrap { white-space: normal; }
@@ -1570,6 +1658,21 @@
             return navStack.length > 0 && navStack[navStack.length - 1].startsWith("devices:");
         }
 
+        function isNotifView() {
+            return navStack.length > 0 && navStack[navStack.length - 1].startsWith("notifs:");
+        }
+
+        // Screens that own their own content and their own controls: a state
+        // poll must never rebuild them, or the touchpad loses its listeners
+        // mid-gesture and a half-typed clipboard message is thrown away.
+        const SELF_OWNED_VIEWS = ["input:", "clipboard:", "notifs:", "files:"];
+
+        function selfOwnedView() {
+            if (!navStack.length) return "";
+            const top = navStack[navStack.length - 1];
+            return SELF_OWNED_VIEWS.some(p => top.startsWith(p)) ? top : "";
+        }
+
         // Everything the snapshot carries except the fields that tick: position
         // and length would otherwise make every view rebuild once a second.
         function stateSignature(kinds) {
@@ -1585,6 +1688,11 @@
 
         function viewSignature() {
             const nav = navStack.join(">");
+            // The touchpad's one live dependency is whether the extension is
+            // there; everything else on these screens comes from their own
+            // endpoints, so the snapshot cannot say anything they need.
+            const owned = selfOwnedView();
+            if (owned) return owned + "|" + (findTarget("system:extension") ? "no-ext" : "ext");
             // The installed list and YouTube search come from separate endpoints,
             // not the snapshot, so a state poll must not re-render them.
             if (isInstalledView()) return "installed|" + nav;
@@ -1648,6 +1756,10 @@
             if (type === "installed") return "Installed apps";
             if (type === "youtube") return "YouTube";
             if (type === "devices") return "Paired devices";
+            if (type === "input") return "Touchpad & keyboard";
+            if (type === "clipboard") return "Clipboard";
+            if (type === "notifs") return "Notifications";
+            if (type === "files") return "Files";
             if (type === "target") {
                 const t = findTarget(key);
                 return t ? t.title : "Details";
@@ -1701,6 +1813,14 @@
                     renderYoutube(content);
                 } else if (type === "devices") {
                     renderDevices(content);
+                } else if (type === "input") {
+                    renderTouchpad(content);
+                } else if (type === "clipboard") {
+                    renderClipboard(content);
+                } else if (type === "notifs") {
+                    renderNotifications(content);
+                } else if (type === "files") {
+                    renderFiles(content);
                 }
             }
 
@@ -1914,6 +2034,9 @@
             }
 
             html += tileHtml({icon: "▶", label: "YouTube", nav: "youtube:search"});
+            // The touchpad is the one screen people reach for mid-task, so it
+            // gets a tile rather than living only under System.
+            html += tileHtml({icon: "🖱", label: "Touchpad", nav: "input:touchpad"});
 
             if (targets("streaming").length) {
                 html += tileHtml({icon: "📺", label: "Streaming", category: "streaming"});
@@ -2142,6 +2265,28 @@
 
         function renderSystem(el) {
             let html = "";
+
+            // First thing on the screen when it applies: without the extension
+            // four features are missing at once, and each of them failing on
+            // its own is what made this look like four separate bugs.
+            const ext = findTarget("system:extension");
+            if (ext) {
+                html += sectionHtml("", `<div class="card">${rowHtml({
+                    icon: ext.icon || "⚠", title: ext.title, sub: ext.note,
+                    wrap: true, danger: true,
+                })}</div>`);
+            }
+
+            html += sectionHtml("Remote control", '<div class="card">' +
+                rowHtml({icon: "🖱", title: "Touchpad & keyboard",
+                         sub: "Move the pointer, type, present", nav: "input:touchpad", chevron: true}) +
+                rowHtml({icon: "📋", title: "Clipboard",
+                         sub: "Copy text between phone and PC", nav: "clipboard:view", chevron: true}) +
+                rowHtml({icon: "🔔", title: "Notifications",
+                         sub: "What the PC is showing", nav: "notifs:view", chevron: true}) +
+                rowHtml({icon: "📁", title: "Files",
+                         sub: "Send a file to the PC, or take one back", nav: "files:view", chevron: true}) +
+                '</div>');
 
             let sliders = "";
             const audio = findTarget("system:audio");
@@ -2672,6 +2817,50 @@
                 const revoke = ev.target.closest("[data-revoke]");
                 if (revoke) { revokeDevice(revoke.dataset.revoke); return; }
 
+                const clickBtn = ev.target.closest("[data-click]");
+                if (clickBtn) {
+                    buzz(5);
+                    sendInput({op: "click", button: clickBtn.dataset.click,
+                               double: clickBtn.dataset.double === "1"});
+                    return;
+                }
+
+                const keyBtn = ev.target.closest("[data-keys]");
+                if (keyBtn) {
+                    buzz(5);
+                    sendInput({op: "keys", keys: keyBtn.dataset.keys});
+                    return;
+                }
+
+                if (ev.target.closest("#typeSend")) {
+                    const box = document.getElementById("typeBox");
+                    const text = box ? box.value : typeDraft;
+                    if (!text) { showError("Nothing to type"); return; }
+                    buzz(8);
+                    sendInput({op: "type", text}, {notice: true});
+                    // Cleared on send: the box is an outbox, and leaving the
+                    // last message in it is how the same line gets typed twice.
+                    if (box) box.value = "";
+                    typeDraft = "";
+                    return;
+                }
+
+                if (ev.target.closest("#clipGet")) { fetchClipboard(); return; }
+                if (ev.target.closest("#clipSend")) { pushClipboard(); return; }
+                if (ev.target.closest("#clipCopy")) { copyToPhone(); return; }
+
+                if (ev.target.closest("#notifClear")) {
+                    notifs = [];
+                    renderNotifList();
+                    return;
+                }
+
+                const download = ev.target.closest("[data-download]");
+                if (download) { downloadFile(download.dataset.download); return; }
+
+                const openFile = ev.target.closest("[data-openfile]");
+                if (openFile) { openFileOnPc(openFile.dataset.openfile); return; }
+
                 const more = ev.target.closest("[data-more]");
                 if (more) { buzz(5); openSheet(more.dataset.more); return; }
 
@@ -2734,9 +2923,19 @@
             };
             content.addEventListener("keydown", keyHandler);
 
+            // A file input fires change, not click: picking a file is the whole
+            // gesture, and there is no button to press afterwards.
+            content.addEventListener("change", (ev) => {
+                if (ev.target.id !== "fileInput" || !ev.target.files || !ev.target.files.length) return;
+                uploadFiles(ev.target.files);
+                ev.target.value = "";
+            });
+
             const inputHandler = (ev) => {
                 if (ev.target.id === "pairCode") { pairCodeDraft = ev.target.value; return; }
                 if (ev.target.id === "pairName") { pairNameDraft = ev.target.value; return; }
+                if (ev.target.id === "typeBox") { typeDraft = ev.target.value; return; }
+                if (ev.target.id === "clipBox") { clipboardDraft = ev.target.value; return; }
                 if (ev.target.type === "search") { onSearchInput(ev.target.id, ev.target.value); return; }
                 const slider = ev.target.closest('input[type="range"][data-action]');
                 if (slider) handleSliderChange(slider);
@@ -2754,6 +2953,519 @@
                     navPop();
                 }
             });
+        }
+
+        // === Remote input =====================================================
+        // The pad streams deltas, never positions: the phone knows nothing
+        // about the screen's size or where the pointer currently is, and an
+        // absolute jump would fight whoever is also using the mouse. Deltas are
+        // coalesced into one request every INPUT_FLUSH_MS, so a fast swipe is
+        // twenty requests a second rather than one per touchmove event.
+        const INPUT_FLUSH_MS = 50;
+        const POINTER_GAIN = 1.8;
+        const TAP_MS = 250;
+        const TAP_SLOP = 12;
+
+        let padMove = {dx: 0, dy: 0};
+        let padScroll = {dx: 0, dy: 0};
+        let padTimer = null;
+        let padInFlight = false;
+        let typeDraft = "";
+
+        async function sendInput(payload, opts) {
+            opts = opts || {};
+            try {
+                const resp = await fetch(`${API_BASE}/input`, {
+                    method: "POST",
+                    headers: getHeaders(),
+                    body: JSON.stringify(payload),
+                });
+                const result = await resp.json();
+                if (!result.ok) {
+                    showError(result.message || "Input failed");
+                } else {
+                    clearError();
+                    if (opts.notice && result.message) showNotice(result.message);
+                }
+                return result;
+            } catch (e) {
+                showError("Connection error");
+                return {ok: false};
+            }
+        }
+
+        function schedulePad() {
+            if (padTimer || padInFlight) return;
+            padTimer = setTimeout(flushPad, INPUT_FLUSH_MS);
+        }
+
+        async function flushPad() {
+            padTimer = null;
+            const move = {dx: Math.round(padMove.dx), dy: Math.round(padMove.dy)};
+            const scroll = {dx: Math.round(padScroll.dx), dy: Math.round(padScroll.dy)};
+            // Keep the fractional remainder rather than dropping it: a slow
+            // drag is a long run of sub-pixel deltas, and rounding each one to
+            // zero would make the pointer refuse to move at all.
+            padMove = {dx: padMove.dx - move.dx, dy: padMove.dy - move.dy};
+            padScroll = {dx: padScroll.dx - scroll.dx, dy: padScroll.dy - scroll.dy};
+
+            const ops = [];
+            if (move.dx || move.dy) ops.push({op: "move", dx: move.dx, dy: move.dy});
+            if (scroll.dx || scroll.dy) ops.push({op: "scroll", dx: scroll.dx, dy: scroll.dy});
+            if (!ops.length) return;
+
+            padInFlight = true;
+            try {
+                for (const op of ops) await sendInput(op);
+            } finally {
+                padInFlight = false;
+                if (Math.round(padMove.dx) || Math.round(padMove.dy) ||
+                    Math.round(padScroll.dx) || Math.round(padScroll.dy)) schedulePad();
+            }
+        }
+
+        function centroid(touches) {
+            let x = 0, y = 0;
+            for (let i = 0; i < touches.length; i++) { x += touches[i].clientX; y += touches[i].clientY; }
+            return {x: x / touches.length, y: y / touches.length};
+        }
+
+        // Bound directly rather than delegated: touchmove fires continuously
+        // and has to be non-passive to preventDefault, which a delegated
+        // listener on #content cannot be without killing the page's own scroll.
+        function bindPad() {
+            const pad = document.getElementById("pad");
+            if (!pad) return;
+            let last = null, startAt = 0, travel = 0, fingers = 0, dragging = false;
+
+            const begin = (point, count) => {
+                pad.classList.add("active");
+                last = point;
+                startAt = Date.now();
+                travel = 0;
+                fingers = count;
+            };
+
+            const drag = (point, count) => {
+                if (!last) { last = point; return; }
+                const dx = point.x - last.x, dy = point.y - last.y;
+                last = point;
+                travel += Math.abs(dx) + Math.abs(dy);
+                if (count > fingers) fingers = count;
+                // Two fingers scroll, and scrolling is inverted the way a
+                // phone's own content is: dragging down shows what is above.
+                if (count >= 2) queueScrollDelta(-dx, -dy);
+                else queueMoveDelta(dx * POINTER_GAIN, dy * POINTER_GAIN);
+                schedulePad();
+            };
+
+            const end = () => {
+                pad.classList.remove("active");
+                if (Date.now() - startAt < TAP_MS && travel < TAP_SLOP) {
+                    buzz(5);
+                    sendInput({op: "click", button: fingers >= 2 ? "right" : "left"});
+                }
+                last = null;
+                fingers = 0;
+            };
+
+            pad.addEventListener("touchstart", (ev) => {
+                ev.preventDefault();
+                begin(centroid(ev.touches), ev.touches.length);
+            }, {passive: false});
+
+            pad.addEventListener("touchmove", (ev) => {
+                ev.preventDefault();
+                drag(centroid(ev.touches), ev.touches.length);
+            }, {passive: false});
+
+            pad.addEventListener("touchend", (ev) => {
+                ev.preventDefault();
+                if (ev.touches.length === 0) end();
+            }, {passive: false});
+
+            pad.addEventListener("touchcancel", () => { pad.classList.remove("active"); last = null; });
+
+            // A mouse is the desktop browser case -- testing the remote from the
+            // PC itself, and the odd laptop used as the remote.
+            pad.addEventListener("mousedown", (ev) => {
+                dragging = true;
+                begin({x: ev.clientX, y: ev.clientY}, 1);
+            });
+            window.addEventListener("mousemove", (ev) => {
+                if (dragging) drag({x: ev.clientX, y: ev.clientY}, 1);
+            });
+            window.addEventListener("mouseup", () => {
+                if (!dragging) return;
+                dragging = false;
+                end();
+            });
+        }
+
+        function queueMoveDelta(dx, dy) { padMove.dx += dx; padMove.dy += dy; }
+        function queueScrollDelta(dx, dy) { padScroll.dx += dx; padScroll.dy += dy; }
+
+        function extensionMissing() {
+            return !!findTarget("system:extension");
+        }
+
+        function renderTouchpad(el) {
+            let html = "";
+            if (extensionMissing()) {
+                const t = findTarget("system:extension");
+                html += sectionHtml("", `<div class="card">${rowHtml({
+                    icon: "⚠", title: t.title, sub: t.note, wrap: true,
+                })}</div>`);
+            }
+
+            html += '<div class="section">';
+            html += '<div class="pad" id="pad"><span class="pad-hint">' +
+                    'Drag to move the pointer · tap to click<br>' +
+                    'Two fingers to scroll · two-finger tap to right-click</span></div>';
+            html += '<div class="btnrow">' +
+                    '<button data-click="left">Left click</button>' +
+                    '<button data-click="left" data-double="1">Double</button>' +
+                    '<button data-click="right">Right click</button>' +
+                    '</div></div>';
+
+            html += sectionHtml("Type on the PC",
+                '<textarea class="box" id="typeBox" placeholder="Type here, then send it to the focused window"' +
+                ` autocapitalize="off" spellcheck="false">${escapeHtml(typeDraft)}</textarea>` +
+                '<div class="btnrow">' +
+                '<button data-keys="return">Enter</button>' +
+                '<button data-keys="backspace">Backspace</button>' +
+                '<button class="primary" id="typeSend">Send text</button>' +
+                '</div>');
+
+            html += sectionHtml("Presentation",
+                '<div class="keypad">' +
+                '<button data-keys="page_up">◀ Prev</button>' +
+                '<button data-keys="f5">Start (F5)</button>' +
+                '<button data-keys="page_down">Next ▶</button>' +
+                '<button data-keys="escape">Escape</button>' +
+                '<button data-keys="f11">Full screen</button>' +
+                '<button data-keys="space">Space</button>' +
+                '</div>');
+
+            html += sectionHtml("Keys",
+                '<div class="keypad">' +
+                '<button class="wide" data-keys="up">▲</button>' +
+                '<button data-keys="left">◀</button>' +
+                '<button data-keys="down">▼</button>' +
+                '<button data-keys="right">▶</button>' +
+                '<button data-keys="ctrl+c">Copy</button>' +
+                '<button data-keys="ctrl+v">Paste</button>' +
+                '<button data-keys="ctrl+z">Undo</button>' +
+                '</div>');
+
+            el.innerHTML = html;
+            bindPad();
+        }
+
+        // === Clipboard ========================================================
+
+        let clipboardText = "";
+        let clipboardNote = "";
+        let clipboardBusy = false;
+        let clipboardDraft = "";
+
+        async function fetchClipboard() {
+            if (clipboardBusy) return;
+            clipboardBusy = true;
+            renderClipboardStatus();
+            try {
+                const resp = await fetch(`${API_BASE}/clipboard`, {headers: getHeaders()});
+                const data = await resp.json();
+                if (!data.ok) {
+                    clipboardNote = data.message || "Could not read the clipboard";
+                } else {
+                    clipboardText = data.text || "";
+                    clipboardDraft = clipboardText;
+                    clipboardNote = data.message ||
+                        (clipboardText ? "" : "The PC clipboard is empty.");
+                    const box = document.getElementById("clipBox");
+                    if (box) box.value = clipboardDraft;
+                }
+            } catch (e) {
+                clipboardNote = "Connection error";
+            } finally {
+                clipboardBusy = false;
+                renderClipboardStatus();
+            }
+        }
+
+        async function pushClipboard() {
+            const box = document.getElementById("clipBox");
+            const text = box ? box.value : clipboardDraft;
+            if (!text.trim()) { showError("Nothing to send"); return; }
+            clipboardBusy = true;
+            renderClipboardStatus();
+            try {
+                const resp = await fetch(`${API_BASE}/clipboard`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({text}),
+                });
+                const data = await resp.json();
+                clipboardNote = data.message || "";
+                if (data.ok) { buzz(8); showNotice(data.message || "Copied to the PC"); }
+                else showError(data.message || "Could not set the clipboard");
+            } catch (e) {
+                showError("Connection error");
+            } finally {
+                clipboardBusy = false;
+                renderClipboardStatus();
+            }
+        }
+
+        // navigator.clipboard needs a secure context, which http://<lan-ip> is
+        // not. Selecting the text is the honest fallback: the phone's own copy
+        // gesture then works, and nothing pretends to have copied.
+        async function copyToPhone() {
+            const box = document.getElementById("clipBox");
+            if (!box) return;
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(box.value);
+                    showNotice("Copied to this phone");
+                    return;
+                }
+            } catch (e) {}
+            box.focus();
+            box.select();
+            showNotice("Selected — use your phone's Copy");
+        }
+
+        function renderClipboardStatus() {
+            const el = document.getElementById("clipStatus");
+            if (el) el.textContent = clipboardBusy ? "Working…" : clipboardNote;
+            const buttons = document.querySelectorAll("#clipActions button");
+            buttons.forEach(b => { b.disabled = clipboardBusy; });
+        }
+
+        function renderClipboard(el) {
+            let html = sectionHtml("PC clipboard",
+                `<textarea class="box" id="clipBox" placeholder="Text to send to the PC clipboard"` +
+                ` spellcheck="false">${escapeHtml(clipboardDraft)}</textarea>` +
+                '<div class="btnrow" id="clipActions">' +
+                '<button id="clipGet">Get from PC</button>' +
+                '<button id="clipCopy">Copy here</button>' +
+                '<button class="primary" id="clipSend">Send to PC</button>' +
+                '</div>' +
+                '<div class="section-note" id="clipStatus"></div>');
+            el.innerHTML = html;
+            renderClipboardStatus();
+            if (!clipboardText && !clipboardNote) fetchClipboard();
+        }
+
+        // === Notifications ====================================================
+
+        let notifs = [];
+        let notifSeq = 0;
+        let notifError = "";
+        let notifTimer = null;
+
+        async function fetchNotifications() {
+            try {
+                const resp = await fetch(`${API_BASE}/notifications?since=${notifSeq}`, {headers: getHeaders()});
+                const data = await resp.json();
+                notifError = data.error || "";
+                const fresh = data.entries || [];
+                if (fresh.length) {
+                    fresh.forEach(entry => { notifSeq = Math.max(notifSeq, entry.seq); });
+                    // Newest first, and bounded: this list is a glance, not an
+                    // archive.
+                    notifs = fresh.reverse().concat(notifs).slice(0, 60);
+                }
+                renderNotifList();
+            } catch (e) {
+                notifError = "Connection error";
+                renderNotifList();
+            }
+        }
+
+        function startNotifPoll() {
+            stopNotifPoll();
+            fetchNotifications();
+            notifTimer = setInterval(() => {
+                // The screen owns the poll: leaving it must not leave a timer
+                // behind hitting the PC every three seconds forever.
+                if (!isNotifView()) { stopNotifPoll(); return; }
+                fetchNotifications();
+            }, 3000);
+        }
+
+        function stopNotifPoll() {
+            if (notifTimer) clearInterval(notifTimer);
+            notifTimer = null;
+        }
+
+        function renderNotifList() {
+            const el = document.getElementById("notifList");
+            if (!el) return;
+            if (notifError) {
+                el.innerHTML = `<div class="empty">${escapeHtml(notifError)}</div>`;
+                return;
+            }
+            if (!notifs.length) {
+                el.innerHTML = '<div class="empty">Nothing yet. Notifications that arrive on the PC from now on show up here.</div>';
+                return;
+            }
+            el.innerHTML = '<div class="card">' + notifs.map(n => rowHtml({
+                icon: "🔔",
+                title: n.summary || n.app,
+                sub: [n.app, n.body].filter(Boolean).join(" · "),
+                meta: relativeTime(n.ts),
+                wrap: true,
+            })).join("") + '</div>';
+        }
+
+        function renderNotifications(el) {
+            el.innerHTML = sectionHtml("Recent",
+                '<div id="notifList"></div>' +
+                '<div class="btnrow"><button id="notifClear">Clear list</button></div>');
+            renderNotifList();
+            startNotifPoll();
+        }
+
+        // === File transfer ====================================================
+
+        let filesList = null;
+        let filesError = "";
+        let filesDir = "";
+        let uploadPct = -1;
+
+        async function fetchFiles() {
+            try {
+                const resp = await fetch(`${API_BASE}/files`, {headers: getHeaders()});
+                const data = await resp.json();
+                filesList = data.files || [];
+                filesDir = data.dir || "";
+                filesError = "";
+            } catch (e) {
+                filesError = "Connection error";
+            }
+            renderFileList();
+        }
+
+        // XHR rather than fetch: a 40 MB photo over Wi-Fi needs a progress bar,
+        // and fetch still cannot report upload progress.
+        function uploadFile(file) {
+            return new Promise((resolve) => {
+                const form = new FormData();
+                form.append("file", file, file.name);
+                const xhr = new XMLHttpRequest();
+                xhr.open("POST", `${API_BASE}/upload`);
+                const headers = getHeaders();
+                Object.keys(headers).forEach(name => {
+                    // FormData sets its own multipart Content-Type, boundary and all.
+                    if (name.toLowerCase() !== "content-type") xhr.setRequestHeader(name, headers[name]);
+                });
+                xhr.upload.addEventListener("progress", (ev) => {
+                    if (!ev.lengthComputable) return;
+                    uploadPct = Math.round((ev.loaded / ev.total) * 100);
+                    renderUploadProgress();
+                });
+                xhr.addEventListener("load", () => {
+                    let data = {};
+                    try { data = JSON.parse(xhr.responseText); } catch (e) {}
+                    if (data.ok) { buzz(10); showNotice(data.message || "Sent"); }
+                    else showError(data.message || `Upload failed (${xhr.status})`);
+                    resolve(data.ok === true);
+                });
+                xhr.addEventListener("error", () => { showError("Upload failed"); resolve(false); });
+                xhr.send(form);
+            });
+        }
+
+        async function uploadFiles(fileList) {
+            for (const file of Array.from(fileList)) {
+                uploadPct = 0;
+                renderUploadProgress();
+                await uploadFile(file);
+            }
+            uploadPct = -1;
+            renderUploadProgress();
+            fetchFiles();
+        }
+
+        // Fetched with the auth headers and handed to the browser as a blob: a
+        // plain <a href> would need the credential in the URL, which is exactly
+        // what the token capture page exists to keep out of history.
+        async function downloadFile(name) {
+            showNotice("Fetching…");
+            try {
+                const resp = await fetch(`${API_BASE}/files/${encodeURIComponent(name)}`, {headers: getHeaders()});
+                if (!resp.ok) { showError(`Download failed (${resp.status})`); return; }
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = name;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 10000);
+            } catch (e) {
+                showError("Download failed");
+            }
+        }
+
+        async function openFileOnPc(name) {
+            try {
+                const resp = await fetch(`${API_BASE}/files/open`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({name}),
+                });
+                const data = await resp.json();
+                if (data.ok) showNotice(data.message || "Opened");
+                else showError(data.message || "Could not open it");
+            } catch (e) {
+                showError("Connection error");
+            }
+        }
+
+        function fmtSize(bytes) {
+            const units = ["B", "KB", "MB", "GB"];
+            let value = bytes, unit = 0;
+            while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
+            return (unit === 0 ? value : value.toFixed(value >= 10 ? 0 : 1)) + " " + units[unit];
+        }
+
+        function renderUploadProgress() {
+            const bar = document.getElementById("uploadBar");
+            if (!bar) return;
+            bar.classList.toggle("hidden", uploadPct < 0);
+            const fill = bar.querySelector("span");
+            if (fill) fill.style.width = Math.max(0, uploadPct) + "%";
+        }
+
+        function renderFileList() {
+            const el = document.getElementById("fileList");
+            if (!el) return;
+            if (filesError) { el.innerHTML = `<div class="empty">${escapeHtml(filesError)}</div>`; return; }
+            if (filesList === null) { el.innerHTML = '<div class="empty">Loading…</div>'; return; }
+            if (!filesList.length) {
+                el.innerHTML = '<div class="empty">No files yet. Anything you send lands in ' +
+                    escapeHtml(filesDir || "the transfer folder") + '.</div>';
+                return;
+            }
+            el.innerHTML = '<div class="card">' + filesList.map(f => rowHtml({
+                icon: "📄",
+                title: f.name,
+                sub: fmtSize(f.size) + " · " + relativeTime(f.mtime),
+            }) + '<div class="btnrow">' +
+                `<button data-download="${escapeAttr(f.name)}">Save to phone</button>` +
+                `<button data-openfile="${escapeAttr(f.name)}">Open on PC</button>` +
+                '</div>').join("") + '</div>';
+        }
+
+        function renderFiles(el) {
+            el.innerHTML = sectionHtml("Send to the PC",
+                '<label class="fileinput">Pick a file from this phone' +
+                '<input type="file" id="fileInput" multiple></label>' +
+                '<div class="progress-track hidden" id="uploadBar"><span></span></div>') +
+                sectionHtml("On the PC", '<div id="fileList"></div>');
+            renderUploadProgress();
+            renderFileList();
+            fetchFiles();
         }
 
         // === Startup ===

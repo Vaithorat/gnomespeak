@@ -191,3 +191,42 @@ def test_home_escapes_player_metadata(rendered_home):
     Collector().feed(rendered_home)
     assert "img" not in tags
     assert "&lt;img src=x onerror=alert(1)&gt;" in rendered_home
+
+
+# --- notifications and touchpad ---------------------------------------------
+
+@pytest.fixture(scope="module")
+def rendered_notifications() -> str:
+    return _render("notifications")
+
+
+@pytest.fixture(scope="module")
+def rendered_touchpad() -> str:
+    return _render("touchpad")
+
+
+def test_notification_text_is_escaped(rendered_notifications):
+    """A notification body is written by whatever app raised it."""
+    assert "<img" not in rendered_notifications
+    assert "&lt;img src=x onerror=alert(1)&gt;" in rendered_notifications
+    assert "Summary" in rendered_notifications
+
+
+def test_touchpad_offers_a_pad_and_key_buttons(rendered_touchpad):
+    assert 'id="pad"' in rendered_touchpad
+    assert 'data-keys="page_down"' in rendered_touchpad
+    assert 'data-click="right"' in rendered_touchpad
+
+
+def test_touchpad_warns_when_the_extension_is_missing(rendered_touchpad):
+    assert "GNOME extension not loaded" in rendered_touchpad
+    assert "vt install-extension" in rendered_touchpad
+    assert "<img" not in rendered_touchpad
+
+
+def test_touchpad_signature_ignores_unrelated_state(rendered_touchpad):
+    """A 1 Hz poll must not rebuild the pad: the rebuild drops its listeners."""
+    signature = [
+        line for line in rendered_touchpad.splitlines() if line.startswith("SIGNATURE:")
+    ][0]
+    assert signature == "SIGNATURE:input:touchpad|no-ext"

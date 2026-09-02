@@ -2,7 +2,7 @@
 
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer
 
 from vt.actions import execute_app_action, match_window, shell_error
@@ -297,3 +297,155 @@ def test_match_window_accepts_reverse_dns_class():
 
 def test_match_window_returns_none_when_absent():
     assert match_window([{"id": 1, "title": "x", "wm_class": "y"}], "firefox") is None
+
+
+# --- clipboard, input, files, notifications ---------------------------------
+# Every one of these endpoints reaches the desktop through a source module, so
+# the source is faked and what is tested here is the HTTP contract: who may
+# call it, what it does with a malformed body, and what it writes to the audit
+# log.
+
+AUTH = {"X-VT-Token": "test-token"}
+
+
+@pytest.mark.parametrize("method,path", [
+    ("get", "/api/clipboard"),
+    ("post", "/api/clipboard"),
+    ("post", "/api/input"),
+    ("get", "/api/notifications"),
+    ("get", "/api/files"),
+    ("post", "/api/upload"),
+    ("get", "/api/files/anything.txt"),
+    ("post", "/api/files/open"),
+])
+async def test_remote_endpoints_require_a_credential(client, method, path):
+    resp = await getattr(client, method)(path)
+    assert resp.status == 401
+
+
+async def test_clipboard_read(client, monkeypatch):
+    monkeypatch.setattr(
+        "vt.sources.clipboard.read_text",
+        lambda: {"ok": True, "text": "from the PC", "message": ""},
+    )
+    resp = await client.get("/api/clipboard", headers=AUTH)
+    assert resp.status == 200
+    assert (await resp.json())["text"] == "from the PC"
+
+
+async def test_clipboard_write_is_audited(client, monkeypatch):
+    written = {}
+
+    def fake_write(text):
+        written["text"] = text
+        return {"ok": True, "message": "Copied"}
+
+    monkeypatch.setattr("vt.sources.clipboard.write_text", fake_write)
+    resp = await client.post("/api/clipboard", json={"text": "hello"}, headers=AUTH)
+    assert resp.status == 200
+    assert written["text"] == "hello"
+    assert any(e["event"] == "clipboard.set" for e in client.vt.auth.audit.tail(5))
+
+
+async def test_input_dispatches_to_the_source(client, monkeypatch):
+    seen = {}
+
+    def fake_execute(op, payload):
+        seen["op"] = op
+        seen["payload"] = payload
+        return {"ok": True, "message": ""}
+
+    monkeypatch.setattr("vt.sources.remote_input.execute", fake_execute)
+    resp = await client.post("/api/input", json={"op": "move", "dx": 5, "dy": -3}, headers=AUTH)
+    assert resp.status == 200
+    assert seen["op"] == "move"
+    assert seen["payload"]["dx"] == 5
+
+
+async def test_pointer_moves_are_not_audited(client, monkeypatch):
+    """20 Hz of pointer deltas would bury every other line in the log."""
+    monkeypatch.setattr(
+        "vt.sources.remote_input.execute", lambda op, payload: {"ok": True, "message": ""}
+    )
+    await client.post("/api/input", json={"op": "move", "dx": 1, "dy": 1}, headers=AUTH)
+    await client.post("/api/input", json={"op": "keys", "keys": "ctrl+c"}, headers=AUTH)
+    events = [e for e in client.vt.auth.audit.tail(10) if e["event"] == "input"]
+    assert [e["op"] for e in events] == ["keys"]
+
+
+async def test_input_rejects_a_non_object_body(client):
+    resp = await client.post("/api/input", data="[]", headers=AUTH)
+    assert resp.status == 400
+
+
+def upload_form(filename: str, payload: bytes) -> FormData:
+    """One multipart file field, the way a phone's <input type="file"> sends it."""
+    form = FormData()
+    form.add_field("file", payload, filename=filename, content_type="application/octet-stream")
+    return form
+
+
+@pytest.fixture
+def transfers(tmp_path, monkeypatch):
+    monkeypatch.setenv("GNOMESPEAK_TRANSFER_DIR", str(tmp_path / "incoming"))
+    from vt.sources.transfer import transfer_dir
+
+    return transfer_dir()
+
+
+async def test_upload_then_list_then_download(client, transfers):
+    resp = await client.post("/api/upload", data=upload_form("hello.txt", b"phone bytes"), headers=AUTH)
+    assert resp.status == 200
+    body = await resp.json()
+    assert body["ok"] and body["name"] == "hello.txt"
+    assert (transfers / "hello.txt").read_bytes() == b"phone bytes"
+
+    listing = await (await client.get("/api/files", headers=AUTH)).json()
+    assert [f["name"] for f in listing["files"]] == ["hello.txt"]
+
+    download = await client.get("/api/files/hello.txt", headers=AUTH)
+    assert download.status == 200
+    assert await download.read() == b"phone bytes"
+
+
+async def test_upload_cannot_write_outside_the_transfer_dir(client, transfers):
+    resp = await client.post(
+        "/api/upload", data=upload_form("../../escaped.txt", b"nope"), headers=AUTH
+    )
+    assert (await resp.json())["ok"] is True
+    # Whatever the name arrives as -- aiohttp percent-encodes the separators on
+    # the way out, a hand-rolled client would not -- it lands in the transfer
+    # directory and nowhere else. safe_name's own handling of a literal
+    # "../../" is covered in tests/test_remote_features.py.
+    written = list(transfers.iterdir())
+    assert len(written) == 1
+    assert written[0].parent == transfers
+    assert not (transfers.parent / "escaped.txt").exists()
+    assert not (transfers.parent.parent / "escaped.txt").exists()
+
+
+async def test_upload_without_a_file_is_a_400(client, transfers):
+    resp = await client.post("/api/upload", data={"notafile": "x"}, headers=AUTH)
+    assert resp.status == 400
+
+
+async def test_download_of_a_missing_file_is_a_404(client, transfers):
+    resp = await client.get("/api/files/nothing-here.txt", headers=AUTH)
+    assert resp.status == 404
+
+
+async def test_notifications_report_why_they_are_empty(client, monkeypatch):
+    class FakeMirror:
+        error = "dbus-monitor is not installed"
+        running = False
+
+        def start(self):
+            return False
+
+        def entries(self, since):
+            return []
+
+    monkeypatch.setattr("vt.sources.notifications_mirror.mirror", lambda: FakeMirror())
+    body = await (await client.get("/api/notifications", headers=AUTH)).json()
+    assert body["ok"] is False
+    assert body["error"] == "dbus-monitor is not installed"

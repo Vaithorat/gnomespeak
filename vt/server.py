@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 from aiohttp import web
 
+from vt import shell
 from vt.actions import HAS_DBUS, execute_action, no_dbus_message
 from vt.auth import (
     CODE_TTL,
@@ -489,6 +490,210 @@ class VoiceTalkServer:
         results, err = await self._run_blocking(related_videos, url, 15)
         return web.json_response({"results": results, "error": err})
 
+    # --- clipboard, input, notifications, files -----------------------------
+
+    async def handle_api_clipboard(self, request: web.Request) -> web.Response:
+        """GET /api/clipboard — what is on the PC's clipboard right now."""
+        _, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.clipboard import read_text
+
+        return web.json_response(await self._run_blocking(read_text))
+
+    async def handle_api_clipboard_set(self, request: web.Request) -> web.Response:
+        """POST /api/clipboard — put the phone's text on the PC's clipboard."""
+        principal, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.clipboard import write_text
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        result = await self._run_blocking(write_text, str(data.get("text") or ""))
+        # Logged like an action: pasting into the PC's clipboard is a change to
+        # the PC, and the audit log is what answers "who did that?".
+        self.auth.audit.record(
+            "clipboard.set", ip=principal["ip"], who=principal["name"],
+            device=principal["id"], ok=bool(result.get("ok")),
+        )
+        return web.json_response(result)
+
+    async def handle_api_input(self, request: web.Request) -> web.Response:
+        """POST /api/input — pointer, scroll, typing and key chords.
+
+        Separate from /api/do because it is not an action on a target: a
+        trackpad streams deltas at 20 Hz, and every one of them would otherwise
+        be one audit line and one snapshot lookup.
+        """
+        principal, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.remote_input import execute as execute_input
+
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "message": "Invalid JSON"}, status=400)
+        if not isinstance(data, dict):
+            return web.json_response({"ok": False, "message": "Invalid JSON"}, status=400)
+
+        op = str(data.get("op") or "")
+        result = await self._run_blocking(execute_input, op, data)
+        # Pointer motion is not recorded: at 20 Hz it would bury every other
+        # line in the log. What was typed and which chords were sent are the
+        # parts someone reading the log afterwards would want.
+        if op in ("type", "keys"):
+            typed = len(str(data.get("text") or ""))
+            detail = str(data.get("keys") or "")[:60] if op == "keys" else f"{typed} chars"
+            self.auth.audit.record(
+                "input", ip=principal["ip"], who=principal["name"],
+                device=principal["id"], op=op, detail=detail,
+                ok=bool(result.get("ok")),
+            )
+        return web.json_response(result)
+
+    async def handle_api_notifications(self, request: web.Request) -> web.Response:
+        """GET /api/notifications — desktop notifications since ?since=."""
+        _, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.notifications_mirror import mirror
+
+        feed = mirror()
+        # Started on first request rather than at startup: a session that never
+        # opens the notifications screen has no reason to run a bus monitor.
+        started = feed.start()
+        try:
+            since = int(request.query.get("since", "0"))
+        except ValueError:
+            since = 0
+        return web.json_response({
+            "ok": started,
+            "entries": feed.entries(since),
+            "error": feed.error,
+            "running": feed.running,
+        })
+
+    async def handle_api_files(self, request: web.Request) -> web.Response:
+        """GET /api/files — what has been transferred, newest first."""
+        _, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.transfer import list_files, transfer_dir
+
+        files = await self._run_blocking(list_files)
+        return web.json_response({"files": files, "dir": str(transfer_dir())})
+
+    async def handle_api_upload(self, request: web.Request) -> web.Response:
+        """POST /api/upload — receive a file from the phone.
+
+        Streamed to disk a chunk at a time: a 100 MB upload read into memory
+        first would be 100 MB of the server's RSS, on a machine that is also
+        playing the video the phone is controlling.
+        """
+        principal, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.transfer import MAX_BYTES, human_size, unique_path
+
+        try:
+            reader = await request.multipart()
+            field = await reader.next()
+        except Exception:
+            return web.json_response(
+                {"ok": False, "message": "Malformed upload"}, status=400
+            )
+        while field is not None and field.name != "file":
+            field = await reader.next()
+        if field is None:
+            return web.json_response(
+                {"ok": False, "message": "No file in the upload"}, status=400
+            )
+
+        path = await self._run_blocking(unique_path, field.filename or "upload")
+        size = 0
+        try:
+            with open(path, "wb") as handle:
+                while True:
+                    chunk = await field.read_chunk()
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > MAX_BYTES:
+                        raise ValueError("too large")
+                    handle.write(chunk)
+        except ValueError:
+            path.unlink(missing_ok=True)
+            return web.json_response(
+                {"ok": False, "message": f"File is larger than {human_size(MAX_BYTES)}"},
+                status=413,
+            )
+        except Exception as e:
+            path.unlink(missing_ok=True)
+            return web.json_response({"ok": False, "message": f"Upload failed: {e}"}, status=500)
+
+        self.auth.audit.record(
+            "file.upload", ip=principal["ip"], who=principal["name"],
+            device=principal["id"], name=path.name, bytes=size,
+        )
+        print(f"\n  ✓ Received {path.name} ({human_size(size)}) from {principal['name']} → {path.parent}\n")
+        return web.json_response({
+            "ok": True,
+            "name": path.name,
+            "size": size,
+            "message": f"Sent {path.name} ({human_size(size)}) to the PC",
+        })
+
+    async def handle_api_download(self, request: web.Request) -> web.Response:
+        """GET /api/files/{name} — send a transferred file back to the phone."""
+        principal, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.transfer import resolve
+
+        path = await self._run_blocking(resolve, request.match_info.get("name", ""))
+        if path is None:
+            return web.json_response({"ok": False, "message": "No such file"}, status=404)
+        self.auth.audit.record(
+            "file.download", ip=principal["ip"], who=principal["name"],
+            device=principal["id"], name=path.name,
+        )
+        return web.FileResponse(
+            path,
+            headers={
+                "Content-Disposition": f'attachment; filename="{path.name}"',
+                "Content-Type": "application/octet-stream",
+            },
+        )
+
+    async def handle_api_file_open(self, request: web.Request) -> web.Response:
+        """POST /api/files/open — open a received file on the PC."""
+        principal, error = self._authorize(request)
+        if error is not None:
+            return error
+        from vt.sources.transfer import open_in_desktop, resolve
+
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        path = await self._run_blocking(resolve, str(data.get("name") or ""))
+        if path is None:
+            return web.json_response({"ok": False, "message": "No such file"}, status=404)
+        result = await self._run_blocking(open_in_desktop, path)
+        self.auth.audit.record(
+            "file.open", ip=principal["ip"], who=principal["name"],
+            device=principal["id"], name=path.name, ok=bool(result.get("ok")),
+        )
+        return web.json_response(result)
+
     async def handle_api_do(self, request: web.Request) -> web.Response:
         """POST /api/do — execute an action."""
         principal, error = self._authorize(request)
@@ -543,6 +748,15 @@ class VoiceTalkServer:
         app.router.add_get("/api/apps", self.handle_api_apps)
         app.router.add_get("/api/youtube", self.handle_api_youtube)
         app.router.add_get("/api/youtube/related", self.handle_api_related)
+        app.router.add_get("/api/clipboard", self.handle_api_clipboard)
+        app.router.add_post("/api/clipboard", self.handle_api_clipboard_set)
+        app.router.add_post("/api/input", self.handle_api_input)
+        app.router.add_get("/api/notifications", self.handle_api_notifications)
+        app.router.add_get("/api/files", self.handle_api_files)
+        app.router.add_post("/api/upload", self.handle_api_upload)
+        # Registered after /api/files so the literal path wins over the pattern.
+        app.router.add_post("/api/files/open", self.handle_api_file_open)
+        app.router.add_get("/api/files/{name}", self.handle_api_download)
         app.router.add_post("/api/do", self.handle_api_do)
         return app
 
@@ -629,6 +843,14 @@ class VoiceTalkServer:
 
         if not HAS_DBUS:
             print("  WARNING: " + no_dbus_message() + "\n")
+        elif not shell.is_available():
+            # Stated once, at startup, as a note rather than an error: the
+            # server runs fine without the extension, it just serves fewer
+            # controls. Saying nothing here is what left people tapping a
+            # touchpad that could never have worked.
+            print("  Note: the GNOME extension is not loaded — no window, workspace,")
+            print("        touchpad or typing control. Media, apps, volume and system")
+            print("        controls work. Fix: vt install-extension, then log back in.\n")
 
         print("  Press Ctrl+C to stop.\n")
 
@@ -674,6 +896,10 @@ class VoiceTalkServer:
         finally:
             print("\n  Shutting down...")
             self.auth.audit.record("server.stop")
+            # The mirror holds a dbus-monitor subprocess; a daemon thread would
+            # not keep the process alive, but the monitor would outlive it.
+            from vt.sources.notifications_mirror import mirror
+            mirror().stop()
             if self._refresh_task:
                 self._refresh_task.cancel()
             if tunnel_task:

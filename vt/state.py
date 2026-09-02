@@ -5,10 +5,11 @@ from vt.model import Snapshot, Target, Action
 from vt.sources.mpris import get_mpris_targets
 from vt.sources.audio import get_audio_targets
 from vt.sources.apps import get_app_targets
-from vt.sources.windows import get_window_targets
+from vt.sources.windows import get_extension_targets, get_window_targets
 from vt.sources.youtube import get_youtube_target
 from vt.sources.youtube_player import get_youtube_player_target
 from vt.sources.bluetooth import get_bluetooth_targets
+from vt.sources.network import get_network_targets
 from vt.sources.streaming import get_streaming_targets
 from vt.sources.system import get_system_targets
 from vt.sources.workspaces import get_workspace_targets
@@ -59,8 +60,15 @@ def get_snapshot() -> Snapshot:
     # System audio (always useful)
     targets.extend(get_audio_targets())
 
+    # Wi-Fi radio
+    targets.extend(get_network_targets())
+
     # Power, brightness and do-not-disturb
     targets.extend(get_system_targets())
+
+    # Says so once when the GNOME extension is missing, rather than letting
+    # every feature that needs it fail on its own.
+    targets.extend(get_extension_targets())
 
     # Configured commands
     config = CommandsConfig()

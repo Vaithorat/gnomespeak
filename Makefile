@@ -45,8 +45,8 @@ ifdef OPEN
 SERVE_FLAGS += --open
 endif
 
-.PHONY: help dev serve setup deps test lint hooks doctor status commands apps \
-        env link unlink clean reset
+.PHONY: help dev serve setup system pydeps extension deps test lint hooks doctor \
+        status commands apps env link unlink clean reset
 
 help: ## Show this help
 	@echo ""
@@ -56,6 +56,7 @@ help: ## Show this help
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "    \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 	@echo ""
 	@echo "  Options:  HOST=0.0.0.0  PORT=9000  NO_TOKEN=1  OPEN=1  ARGS=\"...\""
+	@echo "            SKIP_SYSTEM=1 (no package install)  YES=1 (never prompt)"
 	@echo "  Example:  make dev PORT=9000"
 	@echo ""
 
@@ -71,7 +72,41 @@ serve: dev ## Alias for dev
 
 # --- environment -------------------------------------------------------------
 
-setup: $(STAMP) hooks ## Create the venv and install deps (idempotent)
+# Sequential by construction: the venv cannot be built before python3-venv is
+# installed, and the extension is installed by the vt inside that venv. Written
+# as sub-makes rather than prerequisites so `make -j` cannot reorder them.
+setup: ## Install everything and get ready to run (idempotent)
+	@$(MAKE) system
+	@$(MAKE) pydeps
+	@$(MAKE) extension
+	@$(MAKE) hooks
+
+# A phony wrapper around the stamp file. `make setup` calls the wrapper so make
+# does not announce "'venv/.deps-stamp' is up to date" on every single run; the
+# empty recipe keeps it from announcing "nothing to be done" instead.
+pydeps: $(STAMP)
+	@:
+
+# System packages first: the venv itself needs python3-venv, and dbus-python
+# cannot be pip-installed. The script checks capabilities rather than a package
+# database, so it costs a few milliseconds when nothing is missing, and it asks
+# for sudo only when something is. It never fails the build -- a machine with no
+# sudo or an unknown distro just runs with fewer features, each of which reports
+# its own absence. Skip it with: make dev SKIP_SYSTEM=1
+system: ## Install missing system packages (asks for sudo only if needed)
+ifdef SKIP_SYSTEM
+	@echo "→ system dependencies: skipped (SKIP_SYSTEM=1)"
+else
+	@$(ROOT)/scripts/setup-system.sh $(if $(YES),--yes,) || true
+endif
+
+# The GNOME extension is what window, workspace, touchpad and typing control go
+# through, and installing it is two file operations plus a dconf key -- cheap
+# enough to check on every `make dev` and much better than discovering it is
+# missing from the phone. A no-op when the install is already healthy, and never
+# fatal: without it vt still serves media, apps, volume and system controls.
+extension: $(STAMP) ## Install or repair the GNOME extension (no-op when healthy)
+	@$(VT) install-extension --if-needed || true
 
 # --system-site-packages is mandatory, not a convenience: dbus-python and gi
 # ship as distro packages (python3-dbus, python3-gi) and cannot be pip-installed

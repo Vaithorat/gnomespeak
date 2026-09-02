@@ -32,5 +32,17 @@ Thumbs.db
 # Logs
 *.log
 
-# OpenCode skills (installed, not authored)
-.opencode/skills/
+# Agent tooling and workspaces (local, not part of the project)
+.opencode/
+openspec/
+.claude/
+
+# Internal working notes. Status, gap lists and roadmaps are written for
+# whoever is at this checkout right now; what belongs to everyone lives in
+# README.md, ARCHITECTURE.md, CHANGELOG.md and the issue tracker.
+PENDING.md
+FEATURE_PARITY.md
+ROADMAP.md
+PLAN*.md
+*.plan.md
+notes/
