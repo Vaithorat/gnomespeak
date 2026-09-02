@@ -3,7 +3,6 @@
 ## [Unreleased]
 
 ### Added
-<<<<<<< Updated upstream
 - **Window control on COSMIC** (`sources/cosmic_windows.py`) — Focus,
   Minimize, Maximize, and Close now work under COSMIC (System76's compositor)
   without the GNOME extension, by talking its own
@@ -21,7 +20,6 @@
   a bundled static XKB keymap rather than a new `libxkbcommon` dependency.
   See `COSMIC_INPUT_PARITY.md` for the design and the Phase 0 spike that
   confirmed an ordinary client is allowed to do this here.
-=======
 - **`make dev` sets the machine up by itself.** It now installs missing system
   packages (`scripts/setup-system.sh`, which asks for sudo only when something
   is actually missing and supports apt, dnf, pacman and zypper) and installs or
@@ -52,36 +50,6 @@
   stream to disk with a 100 MB cap; names are reduced to something that cannot
   express a path, and downloads are resolved against the directory's real path
   so a symlink inside it cannot lead out.
-
-### Fixed
-- **`vt doctor` always reported the GNOME extension missing.** The rename to
-  GnomeSpeak updated the bus name in `vt/cli.py` alone, leaving doctor probing
-  `org.gnome.Shell.Extensions.GnomeSpeak` while everything else — including the
-  extension — used `…Extensions.VoiceTalk`. The bus name, object path, uuid and
-  expected method set now live once in `vt/shell.py`.
-- **A pre-rename extension install was left dangling and silent.** An install
-  from before the rename is a `voicetalk@local` symlink into a directory that no
-  longer exists; GNOME Shell drops such an extension without a word, taking
-  window, workspace and browser-tab control with it. `vt install-extension`
-  removes it, drops it from `org.gnome.shell enabled-extensions`, and repairs a
-  dangling `gnomespeak@local` symlink instead of calling it "already installed".
-- **A freshly installed extension could not be enabled.** The running shell only
-  scans the extensions directory at session start, so `gnome-extensions enable`
-  answered "does not exist" — and the printed fallback was that same command.
-  The uuid is written to the dconf enabled list instead, which takes effect at
-  the next login.
-- **Extension version skew is now one line, not one failure per action.**
-  `vt doctor` introspects the live extension and names the features a stale
-  build cannot serve.
-- **A missing extension is visible on the phone.** `system:extension` is a
-  snapshot target, shown once at the top of the System tab and on the touchpad
-  screen, rather than four features failing separately.
-- **Clipboard writes reported a timeout on success.** `wl-copy` forks a process
-  that owns the selection and inherited the stderr pipe, so `subprocess.run`
-  waited out its full timeout on a copy that had already worked.
-
-### Added (earlier in this cycle)
->>>>>>> Stashed changes
 - **Wayland YouTube playback keys** — play/pause, 10s seek, volume, mute,
   **fullscreen** and close tab now work under Wayland. They are delivered
   through the GNOME extension or (on COSMIC) `sources/cosmic_input.py` --
@@ -117,6 +85,31 @@
   serving. Doctor now probes for the newest method and says to log out.
 
 ### Fixed
+- **`vt doctor` always reported the GNOME extension missing.** The rename to
+  GnomeSpeak updated the bus name in `vt/cli.py` alone, leaving doctor probing
+  `org.gnome.Shell.Extensions.GnomeSpeak` while everything else — including the
+  extension — used `…Extensions.VoiceTalk`. The bus name, object path, uuid and
+  expected method set now live once in `vt/shell.py`.
+- **A pre-rename extension install was left dangling and silent.** An install
+  from before the rename is a `voicetalk@local` symlink into a directory that no
+  longer exists; GNOME Shell drops such an extension without a word, taking
+  window, workspace and browser-tab control with it. `vt install-extension`
+  removes it, drops it from `org.gnome.shell enabled-extensions`, and repairs a
+  dangling `gnomespeak@local` symlink instead of calling it "already installed".
+- **A freshly installed extension could not be enabled.** The running shell only
+  scans the extensions directory at session start, so `gnome-extensions enable`
+  answered "does not exist" — and the printed fallback was that same command.
+  The uuid is written to the dconf enabled list instead, which takes effect at
+  the next login.
+- **Extension version skew is now one line, not one failure per action.**
+  `vt doctor` introspects the live extension and names the features a stale
+  build cannot serve.
+- **A missing extension is visible on the phone.** `system:extension` is a
+  snapshot target, shown once at the top of the System tab and on the touchpad
+  screen, rather than four features failing separately.
+- **Clipboard writes reported a timeout on success.** `wl-copy` forks a process
+  that owns the selection and inherited the stderr pipe, so `subprocess.run`
+  waited out its full timeout on a copy that had already worked.
 - **Battery time on a full battery** — UPower keeps reporting a `TimeToEmpty`
   when the battery is full (8391600 seconds on the development machine), which
   rendered as "100% · full · 2331h left". Only a charging or discharging
