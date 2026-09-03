@@ -115,12 +115,21 @@ def test_every_capability_has_a_package_on_every_distro(capability):
 # --- the one-command installer ----------------------------------------------
 
 INSTALL_SCRIPT = ROOT / "install.sh"
+RUN_SCRIPT = ROOT / "run.sh"
 
 
 def test_the_installer_is_executable_and_parses():
     assert os.access(INSTALL_SCRIPT, os.X_OK)
     parsed = subprocess.run(
         [BASH, "-n", str(INSTALL_SCRIPT)], capture_output=True, text=True
+    )
+    assert parsed.returncode == 0, parsed.stderr
+
+
+def test_the_runner_is_executable_and_parses():
+    assert os.access(RUN_SCRIPT, os.X_OK)
+    parsed = subprocess.run(
+        [BASH, "-n", str(RUN_SCRIPT)], capture_output=True, text=True
     )
     assert parsed.returncode == 0, parsed.stderr
 

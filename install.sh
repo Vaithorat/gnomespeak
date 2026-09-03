@@ -58,6 +58,7 @@ fi
 # The extras are the ones a phone remote is expected to have: a QR code at
 # startup, YouTube search, and Web Push (which is also what --tls uses).
 PACKAGE="gnomespeak[qr,youtube,push]"
+GIT_PACKAGE="git+https://github.com/Vaithorat/gnomespeak.git"
 
 externally_managed() {
     python3 - <<'PY'
@@ -67,21 +68,30 @@ sys.exit(0 if os.path.exists(
 PY
 }
 
-echo "📥 Installing GnomeSpeak from PyPI..."
+echo "📥 Installing GnomeSpeak..."
 if ! externally_managed; then
-    python3 -m pip install --user "$PACKAGE"
+    python3 -m pip install --user "$PACKAGE" || {
+        echo "   (PyPI package not found yet, falling back to GitHub repository)"
+        python3 -m pip install --user "$GIT_PACKAGE"
+    }
 elif command -v pipx >/dev/null 2>&1; then
     # --system-site-packages is not optional here: dbus-python and gi are
     # distro packages that cannot be pip-installed, and without them there are
     # no media players and no window control.
     echo "   (this distro manages its Python packages, so installing with pipx)"
-    pipx install --system-site-packages "$PACKAGE"
+    pipx install --system-site-packages "$PACKAGE" || {
+        echo "   (PyPI package not found yet, falling back to GitHub repository)"
+        pipx install --system-site-packages "$GIT_PACKAGE"
+    }
 else
     echo "   (this distro manages its Python packages, and pipx is not installed;"
     echo "    installing into your user site with --break-system-packages, which"
     echo "    touches nothing the distro owns. 'sudo apt install pipx' first if"
     echo "    you would rather have it isolated.)"
-    python3 -m pip install --user --break-system-packages "$PACKAGE"
+    python3 -m pip install --user --break-system-packages "$PACKAGE" || {
+        echo "   (PyPI package not found yet, falling back to GitHub repository)"
+        python3 -m pip install --user --break-system-packages "$GIT_PACKAGE"
+    }
 fi
 
 # An install that put `vt` somewhere unreachable looks exactly like an install
@@ -104,9 +114,33 @@ fi
 echo "🧩 Installing the GNOME extension..."
 vt install-extension --if-needed || true
 
+# Handle immediate action flags
+SERVE=0
+SERVICE=0
+for arg in "$@"; do
+    case "$arg" in
+        --serve|-s) SERVE=1 ;;
+        --service)  SERVICE=1 ;;
+    esac
+done
+
 echo ""
 echo "✅ Installation complete!"
 echo ""
+
+if [ "$SERVICE" -eq 1 ]; then
+    echo "⚙️ Installing and starting systemd user service..."
+    vt install-service
+    echo ""
+    echo "🎉 GnomeSpeak is running in the background."
+    echo "Pair your phone by running:"
+    echo "   vt pair"
+    exit 0
+elif [ "$SERVE" -eq 1 ]; then
+    echo "🚀 Launching GnomeSpeak..."
+    exec vt serve
+fi
+
 echo "🔍 Verify with:"
 echo "   vt doctor"
 echo ""

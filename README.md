@@ -46,9 +46,23 @@ Open a URL in any phone browser and you get a live model of what the PC is doing
 - **Python 3.11+** (check: `python3 --version`)
 - **Phone** with a modern browser (same WiFi network or routed access)
 
-### Quick Install (PyPI)
+### Instant Run (No Clone Needed)
 
-**One command to install everything:**
+**One command to set up and launch immediately:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/run.sh | bash
+```
+
+This verifies system dependencies, installs GnomeSpeak and the GNOME extension, and immediately launches `vt serve` with the pairing QR code and URL.
+
+To install and run it as an autostarting background service instead:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/run.sh | bash -s -- --service
+```
+
+### Standalone Installer
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/install.sh | bash
@@ -57,12 +71,11 @@ curl -fsSL https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/install.s
 This script:
 - Detects your Linux distro (Debian/Ubuntu, Fedora, Arch or openSUSE)
 - Installs the system dependencies it finds missing, asking for sudo only then
-  (`python3-dbus`, `python3-gi`, `wl-clipboard`, `xclip`, `dbus-monitor`,
-  `wireplumber`, `xdg-user-dirs`, plus `xdotool`/`wmctrl` on X11)
-- Installs GnomeSpeak from PyPI
-- Installs the GNOME extension, so window and touchpad control work at your
-  next login
-- Prints next steps
+  (`python3-dbus`, `python3-gi`, `wl-clipboard`, `xclip`, `dbus-bin`,
+  `wireplumber`, `xdg-user-dirs`, `libnotify`, `udisks2`)
+- Installs GnomeSpeak from PyPI (or latest from GitHub if not yet published)
+- Installs the GNOME extension so window and touchpad control work
+- Optionally starts the server (`--serve`) or installs the service (`--service`)
 
 Nothing here is fatal. A distro it does not recognise, a machine with no sudo,
 or one that is not running GNOME still ends up with a server it can start —
