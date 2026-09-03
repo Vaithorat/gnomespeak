@@ -14,7 +14,9 @@ practice, and it needs no notion of directories at all.
 
 import os
 import re
+import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -140,18 +142,113 @@ def human_size(size: int) -> str:
     return f"{value:.1f} GB"
 
 
+_OFFICE_SUFFIXES = {
+    ".xlsx", ".xls", ".xlsm", ".xltx", ".xlt",
+    ".ods", ".ots", ".csv", ".tsv",
+    ".docx", ".doc", ".docm", ".dotx", ".dot",
+    ".odt", ".ott", ".rtf",
+    ".pptx", ".ppt", ".pptm", ".potx", ".pot",
+    ".odp", ".otp",
+    ".odg", ".odf",
+}
+
+
+def _focus_target(win_id):
+    if not win_id:
+        return
+    if isinstance(win_id, str) and win_id.startswith("cosmic:"):
+        try:
+            from vt.sources.cosmic_windows import focus_window as cosmic_focus
+            cosmic_focus(win_id)
+        except Exception:
+            pass
+    else:
+        try:
+            import dbus
+            from vt.sources.windows import shell_interface
+            shell_interface().Focus(dbus.UInt32(win_id))
+        except Exception:
+            pass
+
+
+def _raise_opened_window(initial_ids: set, file_name: str, timeout: float = 3.5):
+    """Wait for the opened window to appear and bring it to the foreground.
+
+    Under Wayland/GNOME, an app launched in the background without an activation
+    token opens unfocused or behind active windows, which can feel like a glitch
+    where the window flickered and vanished. Activating it as soon as it appears
+    raises it cleanly above the active workspace.
+    """
+    from vt.sources.windows import list_windows
+    stem = Path(file_name).stem.lower()
+    name_lower = file_name.lower()
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        time.sleep(0.1)
+        try:
+            cur = list_windows()
+            # 1. First preference: window matching the file title or stem
+            for w in cur:
+                title = str(w.get("title") or "").lower()
+                if name_lower in title or (len(stem) >= 3 and stem in title):
+                    _focus_target(w.get("id"))
+                    return
+
+            # 2. Second preference: any newly mapped window ID
+            new_wins = [w for w in cur if w.get("id") not in initial_ids]
+            if new_wins:
+                _focus_target(new_wins[0].get("id"))
+                return
+        except Exception:
+            pass
+
+
 def open_in_desktop(path: Path) -> dict:
-    """Hand a received file to whatever the desktop opens it with."""
+    """Hand a received file to whatever the desktop opens it with.
+
+    For office documents, --nologo is passed to LibreOffice when available:
+    LibreOffice otherwise pops up an XWayland/Wayland splash screen that unmaps
+    a second later before the document opens, reading visually as a window
+    rapidly opening and closing.
+
+    The newly opened window is brought to the foreground via the GNOME
+    extension (or COSMIC) so it doesn't open buried or unfocused behind
+    maximized windows under Wayland.
+    """
+    initial_ids = set()
+    try:
+        from vt.sources.windows import list_windows
+        initial_ids = {w.get("id") for w in list_windows()}
+    except Exception:
+        pass
+
+    suffix = path.suffix.lower()
+    if suffix in _OFFICE_SUFFIXES and shutil.which("libreoffice"):
+        cmd = ["libreoffice", "--nologo", str(path)]
+    elif shutil.which("gio"):
+        cmd = ["gio", "open", str(path)]
+    elif shutil.which("xdg-open"):
+        cmd = ["xdg-open", str(path)]
+    else:
+        return {"ok": False, "message": "Neither gio nor xdg-open found"}
+
     try:
         subprocess.Popen(
-            ["gio", "open", str(path)],
+            cmd,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        threading.Thread(
+            target=_raise_opened_window,
+            args=(initial_ids, path.name),
+            name="vt-open-raise",
+            daemon=True,
+        ).start()
         return {"ok": True, "message": f"Opened {path.name}"}
     except FileNotFoundError:
-        return {"ok": False, "message": "gio not found (install glib2 tools)"}
+        return {"ok": False, "message": f"{cmd[0]} not found"}
     except Exception as e:
         return {"ok": False, "message": f"Error: {e}"}

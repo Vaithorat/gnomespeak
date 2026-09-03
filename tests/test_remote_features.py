@@ -525,3 +525,79 @@ def test_load_state_calls_an_unknown_uuid_unscanned(monkeypatch):
         lambda *a, **k: SimpleNamespace(returncode=2, stdout=""),
     )
     assert shell.load_state() == "unscanned"
+
+
+# --- open_in_desktop tests ---------------------------------------------------
+
+def test_open_in_desktop_libreoffice_nologo(tmp_path, monkeypatch):
+    """Office files pass --nologo to LibreOffice to prevent the splash glitch."""
+    xlsx = tmp_path / "sheet.xlsx"
+    xlsx.write_text("dummy")
+
+    called_cmd = []
+    monkeypatch.setattr(transfer.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        transfer.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: called_cmd.extend(cmd),
+    )
+
+    result = transfer.open_in_desktop(xlsx)
+    assert result["ok"] is True
+    assert called_cmd == ["libreoffice", "--nologo", str(xlsx)]
+
+
+def test_open_in_desktop_gio_open(tmp_path, monkeypatch):
+    """Non-office files use gio open."""
+    txt = tmp_path / "notes.txt"
+    txt.write_text("hello")
+
+    called_cmd = []
+    monkeypatch.setattr(
+        transfer.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name == "gio" else None,
+    )
+    monkeypatch.setattr(
+        transfer.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: called_cmd.extend(cmd),
+    )
+
+    result = transfer.open_in_desktop(txt)
+    assert result["ok"] is True
+    assert called_cmd == ["gio", "open", str(txt)]
+
+
+def test_open_in_desktop_xdg_open_fallback(tmp_path, monkeypatch):
+    """When gio is missing, falls back to xdg-open."""
+    txt = tmp_path / "notes.txt"
+    txt.write_text("hello")
+
+    called_cmd = []
+    monkeypatch.setattr(
+        transfer.shutil,
+        "which",
+        lambda name: f"/usr/bin/{name}" if name == "xdg-open" else None,
+    )
+    monkeypatch.setattr(
+        transfer.subprocess,
+        "Popen",
+        lambda cmd, **kwargs: called_cmd.extend(cmd),
+    )
+
+    result = transfer.open_in_desktop(txt)
+    assert result["ok"] is True
+    assert called_cmd == ["xdg-open", str(txt)]
+
+
+def test_open_in_desktop_missing_opener(tmp_path, monkeypatch):
+    """When no opener is installed, reports an error."""
+    txt = tmp_path / "notes.txt"
+    txt.write_text("hello")
+
+    monkeypatch.setattr(transfer.shutil, "which", lambda name: None)
+    result = transfer.open_in_desktop(txt)
+    assert result["ok"] is False
+    assert "Neither gio nor xdg-open found" in result["message"]
+

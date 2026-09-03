@@ -3425,7 +3425,7 @@
                 if (download) { downloadFile(download.dataset.download); return; }
 
                 const openFile = ev.target.closest("[data-openfile]");
-                if (openFile) { openFileOnPc(openFile.dataset.openfile); return; }
+                if (openFile) { openFileOnPc(openFile.dataset.openfile, openFile); return; }
 
                 const pin = ev.target.closest("[data-pin]");
                 if (pin) { togglePin(pin.dataset.pin); return; }
@@ -4450,7 +4450,14 @@
             }
         }
 
-        async function openFileOnPc(name) {
+        const openingFiles = new Set();
+        async function openFileOnPc(name, btn) {
+            if (openingFiles.has(name)) return;
+            openingFiles.add(name);
+            if (btn) {
+                btn.disabled = true;
+                btn.textContent = "Opening…";
+            }
             try {
                 const resp = await fetch(`${API_BASE}/files/open`, {
                     method: "POST", headers: getHeaders(), body: JSON.stringify({name}),
@@ -4460,6 +4467,14 @@
                 else showError(data.message || "Could not open it");
             } catch (e) {
                 showError("Connection error");
+            } finally {
+                setTimeout(() => {
+                    openingFiles.delete(name);
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = "Open on PC";
+                    }
+                }, 1200);
             }
         }
 
