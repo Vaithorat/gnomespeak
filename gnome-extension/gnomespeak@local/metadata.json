@@ -1,9 +1,10 @@
 {
   "name": "GnomeSpeak",
-  "description": "Window, workspace, pointer and keystroke control for GnomeSpeak remote",
-  "version": "3.4.0",
+  "description": "Control this PC from a phone on the same network: focus, close, minimise and maximise windows, move them between workspaces, move the pointer, type, and send keyboard shortcuts. Under Wayland only the compositor may inject input, which is why this work lives in an extension. It exports a D-Bus interface on the session bus for the GnomeSpeak server to call; it opens no network connection of its own.",
   "uuid": "gnomespeak@local",
-  "shell-version": [
-    "50"
-  ]
+  "version": 4,
+  "version-name": "3.4.0",
+  "session-modes": ["user"],
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "url": "https://github.com/Vaithorat/gnomespeak"
 }

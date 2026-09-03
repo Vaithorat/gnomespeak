@@ -2,37 +2,38 @@
 
 ## Overview
 
-VoiceTalk is a Linux CLI that reports what is running on your PC and serves a
+GnomeSpeak is a Linux CLI that reports what is running on your PC and serves a
 small web page any phone browser can open. There is no app to install, no voice
 pipeline, and no language model — the phone shows real system state and invokes
 a fixed set of concrete actions.
 
 ```
 ┌──────────────────────┐          ┌──────────────────────────────────────────┐
-│   Phone browser      │          │   Linux PC — make dev                    │
-│                      │          │                                          │
-│  index.html          │  HTTP    │  ┌────────────────────────────────────┐  │
-│  • polls /api/state  ├──────────┤  │ server.py (aiohttp)                │  │
-│    once a second     │  1 Hz    │  │ • token auth (X-VT-Token)          │  │
-│  • posts /api/do     │          │  │ • snapshot cache, refreshed at 1Hz │  │
-│  • token in          │          │  │ • one worker thread for blocking   │  │
-│    localStorage      │          │  └───────────┬───────────┬────────────┘  │
-└──────────────────────┘          │              │           │               │
-                                  │   state.py ──┘           └── actions.py  │
-                                  │      │                          │        │
-                                  │      ▼                          ▼        │
-                                  │  ┌────────────────┐   ┌──────────────┐   │
-                                  │  │ sources/       │   │ execute_     │   │
-                                  │  │ • mpris.py     │   │ action()     │   │
-                                  │  │ • windows.py   │   │              │   │
-                                  │  │ • apps.py      │   │ wpctl        │   │
-                                  │  │ • audio.py     │   │ D-Bus        │   │
-                                  │  │ commands.py    │   │ pkill        │   │
-                                  │  └───────┬────────┘   │ argv exec    │   │
-                                  │          │            └──────┬───────┘   │
-                                  └──────────┼───────────────────┼───────────┘
-                                             ▼                   ▼
-                                    D-Bus · PipeWire · /proc · GNOME Shell
+│   Phone browser      │          │   Linux PC — vt serve                    │
+│                      │   WS     │                                          │
+│  index.html          │◄────────►│  ┌────────────────────────────────────┐  │
+│  • holds /ws, gets   │  patches │  │ server.py (aiohttp)                │  │
+│    only what changed │          │  │ • token auth (X-VT-Token)          │  │
+│  • polls /api/state  │  HTTP    │  │ • device auth (X-VT-Device/Secret) │  │
+│    when it cannot    ├──────────┤  │ • snapshot cache, refreshed at 1Hz │  │
+│  • posts /api/do     │          │  │ • one worker thread for blocking   │  │
+│  • credential in     │          │  └──┬────────┬───────────┬────────────┘  │
+│    localStorage      │          │     │        │           │               │
+└──────────────────────┘          │ live.py   state.py   actions.py          │
+                                  │     │        │           │               │
+                                  │     ▼        ▼           ▼               │
+                                  │  ┌────────────────┐  ┌──────────────┐    │
+                                  │  │ sources/       │  │ execute_     │    │
+                                  │  │ • mpris.py     │  │ action()     │    │
+                                  │  │ • windows.py   │  │              │    │
+                                  │  │ • apps.py      │  │ wpctl        │    │
+                                  │  │ • audio.py     │  │ D-Bus        │    │
+                                  │  │ • monitor.py   │  │ pkill        │    │
+                                  │  │ commands.py    │  │ argv exec    │    │
+                                  │  └───────┬────────┘  └──────┬───────┘    │
+                                  └──────────┼──────────────────┼────────────┘
+                                             ▼                  ▼
+                          D-Bus · PipeWire · /proc · portals · GNOME Shell
 ```
 
 `vt/cli.py` is the other entry point. `vt status` prints the same snapshot
@@ -68,24 +69,123 @@ dependency costs you one section of the UI, not the server.
 | Source | Reads | Requires |
 | --- | --- | --- |
 | `sources/mpris.py` | Players, metadata, position, capabilities | `python3-dbus` |
+| `sources/art.py` | Album art for playing track (`/api/art`, not snapshot) | `python3-dbus` |
 | `sources/windows.py` | Open windows on the active workspace | GNOME extension, or `sources/cosmic_windows.py` |
+| `sources/cosmic_windows.py` | Wayland foreign toplevel window control | `pywayland` (optional extra: `wayland`) |
+| `sources/cosmic_input.py` | Wayland virtual keyboard keystroke injection | `pywayland` (optional extra: `wayland`) |
+| `sources/firefox.py` | Open tabs from Firefox recovery session store | `lz4` (built-in fallback parser) |
 | `sources/apps.py` | Running apps, matched to `.desktop` entries | `psutil` |
 | `sources/apps.py` | Installed apps (`/api/apps`, not the snapshot) | — |
-| `sources/youtube.py` | YouTube search results (`/api/youtube`, not the snapshot) | `yt-dlp` |
-| `sources/audio.py` | Default sink and source volume and mute | `wpctl` (PipeWire) |
-| `sources/network.py` | Wi-Fi radio on/off | `python3-dbus`, NetworkManager |
-| `sources/clipboard.py` | The PC clipboard (`/api/clipboard`, not the snapshot) | `wl-clipboard`, or `xclip`/`xsel` |
-| `sources/remote_input.py` | Nothing — pointer, typing and chords are write-only (`/api/input`) | GNOME extension |
-| `sources/notifications_mirror.py` | Desktop notifications (`/api/notifications`, not the snapshot) | `dbus-monitor` |
-| `sources/transfer.py` | Files sent from a phone (`/api/files`, not the snapshot) | — |
-| `commands.py` | User-defined commands | `~/.config/gnomespeak/commands.toml` |
+| `sources/audio.py` | System volume, per-stream mixers, sink/source devices | `wpctl` (PipeWire) |
+| `sources/youtube.py` | YouTube search results (`/api/youtube`, not snapshot) | `yt-dlp` |
+| `sources/youtube_player.py` | YouTube Wayland media keys & fullscreen/close-tab | GNOME extension or `cosmic_input.py` |
+| `sources/browser_autoplay.py`| Firefox autoplay policy verification and fix | — |
+| `sources/workspaces.py` | Workspace listing and switching | GNOME extension |
+| `sources/bluetooth.py` | Bluetooth adapter radio, paired devices, battery levels | `python3-dbus` (BlueZ) |
+| `sources/streaming.py` | Streaming shortcuts (desktop app or web fallback) | — |
+| `sources/steam.py` | Installed Steam games from library manifests | — |
+| `sources/system.py` | Lock, suspend, restart, shutdown, brightness, DND, battery | `systemd-logind`, `gsettings`, UPower |
+| `sources/network.py` | Wi-Fi radio on/off and saved connection switching | `python3-dbus`, NetworkManager |
+| `sources/clipboard.py` | The PC clipboard (`/api/clipboard`, not snapshot) | `wl-clipboard`, or `xclip`/`xsel` |
+| `sources/clipboard_history.py` | Last copied clips (`/api/clipboard/history`, not snapshot) | a clipboard tool |
+| `sources/remote_input.py` | Pointer, typing and chords write-only (`/api/input`) | GNOME extension |
+| `sources/notifications_mirror.py` | Desktop notifications (`/api/notifications`, not snapshot) | `dbus-monitor` |
+| `sources/transfer.py` | Files sent from phone (`/api/files`, not snapshot) | — |
+| `sources/monitor.py` | CPU, memory, disk, thermals, uptime (`system:machine`) | `psutil` |
+| `sources/disks.py` | Removable drives and safe ejection | `psutil`, `udisksctl` |
+| `sources/keypads.py` | Contextual shortcut keys for focused app | GNOME extension / COSMIC input |
+| `sources/ring.py` | Ring this PC alarm sound | `canberra-gtk-play`, `pw-play` or `paplay` |
+| `sources/screenshot.py` | One still frame (`/api/screenshot`, not snapshot) | `org.freedesktop.portal.Screenshot` |
+| `sources/wallpaper.py` | Set desktop background image (light/dark) | `gsettings` |
+| `sources/open_url.py` | Open link in PC default browser | `xdg-open` / `gio` |
+| `sources/wake.py` | Broadcast Wake-on-LAN magic packets | — |
+| `notify.py` | PC low-battery notifications and banners | `notify-send` / libnotify |
+| `push.py` | Encrypted Web Push delivery to service worker | `cryptography` (optional extra: `push`) |
+| `schedule.py` | Timers held in memory (sleep timers, delayed actions) | — |
+| `commands.py` | User-defined shell commands and multi-step macros | `~/.config/gnomespeak/commands.toml` |
 
-Four of those are deliberately outside the 1 Hz snapshot. The clipboard, the
-notification feed and the transferred-file list are all things the phone asks
-for when a screen that shows them is open; pushing them to every phone every
-second would be a poll that mostly re-sends what nobody is looking at. Remote
-input is not state at all -- it produces nothing to display, only deltas to
-apply, and it streams the other way at 20 Hz.
+Several of those are deliberately outside the 1 Hz snapshot. The clipboard, its
+history, the notification feed, album art, a screenshot and the transferred-file
+list are all things the phone asks for when a screen that shows them is open;
+pushing them to every phone every second would be a poll that mostly re-sends
+what nobody is looking at. Remote input is not state at all -- it produces
+nothing to display, only deltas to apply, and it streams the other way at 20 Hz.
+
+`procs.py` is what keeps the sources that shell out from adding up. A source
+like `audio.py` or `system.py` needs several small subprocesses that spend
+their whole lives waiting on someone else (`wpctl`, `gsettings`), so `run_all`
+starts them together and collects them together rather than paying each one's
+latency in turn on the single worker thread.
+
+## The live channel
+
+`vt/live.py` holds one WebSocket per phone (`GET /ws`) and sends only what
+changed: a target whose title, status or actions differ from the copy that
+phone already has. A PC with nothing happening therefore costs no traffic at
+all, where the 1 Hz poll it replaces re-sent the whole snapshot every second on
+mobile data.
+
+Three details are load-bearing:
+
+- **The ticket, not the credential.** A browser's WebSocket handshake cannot
+  carry headers, and a device secret must never travel in a URL — a URL is
+  logged by proxies, kept in history, and handed to the next page in a
+  referrer. `POST /api/ws-ticket` mints a single-use, short-lived ticket
+  instead, and the socket presents that.
+- **An action wakes the collector.** Doing something and then waiting up to a
+  second for the snapshot to notice is what made the UI feel remote. `/api/do`
+  and `/ws` both nudge the collector, so the change comes back in roughly a
+  quarter of a second.
+- **The poll is still there.** A browser that cannot hold a socket, or a phone
+  that just lost one, falls back to `GET /api/state` and loses nothing but the
+  latency. Nothing is only reachable over the socket.
+
+Pointer and scroll deltas ride the same socket in the other direction, which
+replaced a POST every 50 ms, and notifications are pushed onto it by the mirror
+as they arrive rather than found by the phone asking.
+
+## Reaching a phone whose page is closed
+
+A tab that is not open runs no code, so everything above stops at the moment
+someone locks their phone. `vt/push.py` is the exception: a Web Push
+subscription, encrypted per RFC 8291 and authorized per RFC 8292, posted to the
+endpoint the browser handed back and delivered to `vt/ui/sw.js`. Both RFCs are
+implemented here against `cryptography` rather than by adding a push library —
+together they are about a hundred lines, and the RFC's own worked example is in
+the test suite, so the code is checked against the standard rather than against
+itself. Without the `push` extra every entry point degrades to "not available"
+with a reason, like the rest of the sources.
+
+`vt/ui/manifest.webmanifest` and `sw.js` are the other half of that page: a
+home-screen icon, a fullscreen window, an offline "PC unreachable" screen
+instead of a browser error, and a GnomeSpeak entry in Android's share sheet. A
+share POST arrives at the service worker with no credential attached, so the
+worker parks the payload and the page — which holds the credential — uploads it
+through the ordinary endpoints.
+
+## Running as a service, and on the LAN over TLS
+
+`vt/service.py` writes a systemd **user** unit bound to
+`graphical-session.target`. Not a system unit: every source vt reads — MPRIS,
+the Shell extension, the session bus, PipeWire — lives in the desktop session
+and does not exist outside it. The unit requires pairing, because a service
+prints its startup banner where nobody will read it, so a token nobody has seen
+must not be a way in; `vt pair` mints a code from a terminal instead.
+
+`vt/tls.py` is the LAN half of the security story. Off-network traffic already
+rides the tunnel's TLS; on the LAN the token travelled in a header over plain
+HTTP, which anyone on the same Wi-Fi could read. A self-signed certificate is
+the only kind a desktop can make for itself, so `vt serve --tls` is opt-in and
+states the cost plainly: the phone warns once, and the fingerprint printed at
+startup is what the person is meant to check. The certificate covers this
+machine's LAN address, hostname and loopback, and is regenerated when that
+address changes, since moving between networks would otherwise add a name
+mismatch to the warning already on screen.
+
+`vt/schedule.py` holds timers ("suspend in thirty minutes") in memory, checked
+by the collector that already runs once a second. They die with the server on
+purpose: a timer that survived a restart would fire against a desktop that has
+been doing something else for an hour.
 
 ## The GNOME extension
 
@@ -129,6 +229,42 @@ Two operational notes, both learned the hard way:
   `ServiceUnknown`/`NameHasNoOwner` mean "not installed"; anything else is
   reported verbatim. Collapsing the two once hid a live `TypeError` behind
   "GNOME extension not available" and sent debugging in the wrong direction.
+
+## Installing, and keeping the extension current
+
+There are two supported ways in, and they differ in one thing only: where the
+extension source lives.
+
+- **From a checkout** — `make dev` installs the system packages that are
+  missing, builds `venv/` with `--system-site-packages` (dbus-python and gi are
+  distro packages and cannot be pip-installed), installs the project editable,
+  and runs `vt install-extension --if-needed`. The extension is *symlinked*, so
+  editing `extension.js` and logging back in is the whole edit cycle.
+- **From PyPI** — `install.sh`, or `pip install gnomespeak` by hand. The
+  extension travels in the wheel as data (`share/gnomespeak/gnome-extension/`),
+  which is why `vt install-extension` works with no clone. Here it is *copied*,
+  not symlinked: that directory belongs to pip, an upgrade or an uninstall
+  takes it away, and GNOME Shell drops an extension whose directory is a
+  dangling symlink without a word — the same silent failure the pre-rename
+  `voicetalk@local` install produced.
+
+Copying costs something the symlink did not: nothing else updates the copy. A
+`pip install -U gnomespeak` replaces the source and leaves the extensions
+directory alone, and an extension one version behind the server that calls it
+is exactly what `vt doctor` reports as "running an older build", one failing
+feature at a time. So `--if-needed` compares the integer `version` in both
+`metadata.json` files and reinstalls when the shipped one is newer, which makes
+`make dev` and `install.sh` self-repairing. `vt --version` prints both numbers
+for the same reason.
+
+`install.sh` also has to survive PEP 668. Ubuntu 24.04, Debian 12 and Fedora 39
+onwards mark the system interpreter externally managed, and a bare
+`pip install` there fails outright with `error:
+externally-managed-environment`. The script prefers `pipx install
+--system-site-packages` (the flag is not optional — without the system site
+packages there is no dbus-python, so no media players and no window control),
+falls back to `pip install --user --break-system-packages`, and says which it
+chose and why.
 
 ## COSMIC window control
 
@@ -195,15 +331,33 @@ to add.
 | `GET /api/state` | token/device | Current snapshot as JSON |
 | `GET /api/apps` | token/device | Installed apps, optionally filtered by `?q=` |
 | `GET /api/youtube` | token/device | YouTube videos, searched by `?q=` |
+| `GET /api/youtube/related` | token/device | What to watch after the video already playing |
 | `POST /api/do` | token/device | `{target, action, value?}` → `{ok, message}` |
+| `POST /api/ws-ticket` | token/device | Trade a credential for a single-use socket ticket |
+| `GET /ws` | ticket | The live channel: patches out, pointer deltas in |
 | `GET /api/clipboard` | token/device | The PC's clipboard as text |
 | `POST /api/clipboard` | token/device | `{text}` → put it on the PC's clipboard |
+| `GET`/`DELETE /api/clipboard/history` | token/device | The last few things copied, or forget them |
 | `POST /api/input` | token/device | `{op: move\|click\|scroll\|type\|keys, ...}` |
 | `GET /api/notifications` | token/device | Desktop notifications after `?since=<seq>` |
+| `POST /api/notifications/dismiss` | token/device | `{id}` → Close one on the PC |
+| `POST /api/notifications/mute` | token/device | Do not disturb, from the phone |
+| `GET /api/push/key` | token/device | The VAPID public key the browser subscribes with |
+| `POST /api/push/subscribe` · `/unsubscribe` | token/device | Register or drop a Web Push endpoint |
+| `GET /api/screenshot` | token/device | One still frame, through the portal, then deleted |
+| `GET /api/art` | token/device | Album art for the playing track, by key |
+| `GET /api/diagnostics` | token/device | `vt doctor`, rendered on the phone |
+| `POST /api/open` | token/device | `{url}` → open an http(s) link on the PC |
+| `POST /api/wake` | token/device | `{mac}` → a wake-on-LAN packet to another machine |
+| `POST /api/probe` | token/device | Ask whether another machine on the LAN is up |
+| `GET /api/audit` | device | The security log, from the phone |
 | `GET /api/files` | token/device | What has been transferred, newest first |
 | `POST /api/upload` | token/device | Multipart `file` field, streamed to disk |
 | `GET /api/files/{name}` | token/device | Download one transferred file |
 | `POST /api/files/open` | token/device | `{name}` → open it on the PC |
+| `POST /api/files/wallpaper` | token/device | `{name}` → make it the desktop background |
+| `POST /share` | none | Where Android's share sheet posts; the worker normally catches it first, and the server's reply only explains why it did not |
+| `GET /{name}` | none | Static PWA assets (`sw.js`, `manifest.webmanifest`, app icons) |
 
 **Why remote input is not an action.** `/api/do` looks a target up in the
 snapshot and writes an audit line per call. A trackpad has no target and sends
@@ -302,9 +456,21 @@ because the URL is not a credential off-network.
    in the browser instead of reflecting it into the response.
 7. **Security headers.** CSP (nonce-based), HSTS, X-Frame-Options DENY,
    nosniff, no-referrer, COOP on every response.
+8. **Scopes.** A device is paired `full` or `guest` (`vt pair --guest`), and a
+   guest holds one capability: `media`. Power, input, files, the clipboard,
+   notifications, screenshots and pairing are all refused for it. `vt pair
+   --hours N` additionally gives a credential an expiry, so a visitor's phone
+   stops working by itself rather than staying paired until someone remembers
+   to revoke it.
+9. **The socket is not a second front door.** `/ws` is reachable only with a
+   ticket minted by an already-authenticated POST, single-use and good for
+   seconds, and every action arriving over it goes through the same scope check
+   as `/api/do`.
 
 The Cloudflare tunnel provides HTTPS end-to-end. On the LAN, plain HTTP is the
-documented trade-off — run it on a network you trust.
+default and `vt serve --tls` is the alternative: a certificate this machine
+makes for itself, one browser warning, and a fingerprint printed at startup to
+check it against (`vt/tls.py`).
 
 ## Configuration
 
@@ -317,6 +483,18 @@ label = "Lock screen"
 run = ["loginctl", "lock-session"]   # argv, never a shell string
 icon = "🔒"
 confirm = true                        # UI asks before running
+
+# Or a macro: sequential target-and-action steps with optional waits
+[[command]]
+id = "movie_mode"
+label = "Movie mode"
+icon = "🎬"
+steps = [
+  {target = "system:notifications", action = "dnd_on"},
+  {target = "system:display", action = "night_light_on"},
+  {wait = 0.5},
+  {target = "system:audio", action = "volume", value = 0.4},
+]
 ```
 
 Validation happens at load. Invalid entries are skipped with a message rather
@@ -324,12 +502,19 @@ than failing the server: a typo in one command should not take the remote down.
 Ids may not shadow a built-in action name (`volume`, `mute`, `focus`, …), since
 command targets are addressed as `command:<id>` with the action `run`.
 
+Macros define a `steps` list instead of `run`. Each step is either a target and
+action pair (`{target, action, value?}`) or a delay (`{wait = seconds}`). Steps
+never execute external binaries, keeping macros strictly bounded by the same
+safe actions available to the phone. A macro aborts at the first step that fails.
+
 ## Testing
 
-`pytest` covers models, sources, command validation, server auth, dispatch, and
-the injection regressions. `tests/test_ui.py` runs the real UI render functions
-under node with DOM stubs and asserts that hostile window titles come out as
-text — the escaping is tested, not just read.
+854 tests cover models, sources, command and macro validation, server auth,
+dispatch, the live WebSocket channel and patch diffing, Web Push RFC 8291/8292
+encryption, LAN TLS certificate generation, service management, and injection
+regressions. `tests/test_ui.py` runs the real UI render functions under Node
+with DOM stubs and asserts that hostile window titles come out as text — the
+escaping is tested, not just read.
 
-CI runs the suite on Python 3.11–3.13 with `dbus-python` installed, plus a
+CI runs the suite on Python 3.11–3.14 with `dbus-python` installed, plus a
 second job without it that asserts the degraded path still imports and serves.

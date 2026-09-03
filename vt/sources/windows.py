@@ -205,7 +205,21 @@ def _tab_targets(window: dict, session: dict) -> list[Target]:
     return targets
 
 
-def get_window_targets() -> list[Target]:
+def _move_actions(spaces: dict) -> list:
+    """"Move to workspace N" for every workspace that is not the current one.
+
+    List() only ever reports the active workspace, so every window it returns
+    is on it -- the only moves worth offering are to the others.
+    """
+    actions = []
+    for index in range(min(int(spaces.get("count", 0) or 0), _MAX_MOVE_TARGETS)):
+        if index == int(spaces.get("active", -1)):
+            continue
+        actions.append(Action(id=f"move_ws_{index}", label=f"To workspace {index + 1}"))
+    return actions
+
+
+def get_window_targets(windows=None) -> list[Target]:
     """Get open windows via the GNOME extension D-Bus interface.
 
     Firefox windows expand into one target per tab, read from the browser's
@@ -217,7 +231,11 @@ def get_window_targets() -> list[Target]:
     instead, which needs no D-Bus at all. This function returns [] gracefully
     if neither backend can report anything.
     """
-    windows = list_windows()
+    # The caller may already have the list -- the snapshot reads it once and
+    # feeds both this and the key pads -- and asking the extension twice a
+    # second for the same answer buys nothing.
+    if windows is None:
+        windows = list_windows()
     if not windows:
         return []
 
@@ -227,16 +245,7 @@ def get_window_targets() -> list[Target]:
         sessions = []
     used: set = set()
 
-    # List() only ever reports the active workspace, so every window here is on
-    # it -- the only moves worth offering are to the *other* workspaces.
-    spaces = workspace_info()
-    move_actions = []
-    for index in range(min(int(spaces.get("count", 0) or 0), _MAX_MOVE_TARGETS)):
-        if index == int(spaces.get("active", -1)):
-            continue
-        move_actions.append(
-            Action(id=f"move_ws_{index}", label=f"To workspace {index + 1}")
-        )
+    move_actions = _move_actions(workspace_info())
 
     targets = []
     for w in windows:

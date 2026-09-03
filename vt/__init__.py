@@ -1,3 +1,3 @@
-"""VoiceTalk v3.0 — Linux CLI remote control via web UI."""
+"""GnomeSpeak — Linux CLI remote control via a web UI."""
 
-__version__ = "3.0.0"
+__version__ = "3.4.0"

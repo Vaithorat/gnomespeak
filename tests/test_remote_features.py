@@ -7,6 +7,7 @@ same thing on a headless CI box as it does on a GNOME session.
 """
 
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -311,6 +312,66 @@ def test_mirror_since_returns_only_newer_entries():
     assert [e["summary"] for e in later] == ["Standup"]
 
 
+# --- notification ids and dismissal -----------------------------------------
+
+DAEMON = ":1.32"
+
+TRAFFIC_WITH_REPLY = """method call time=1730000000.1 sender=:1.9 -> destination=:1.32 \
+serial=7 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
+   string "Firefox"
+   uint32 0
+   string ""
+   string "Download finished"
+   string "gnomespeak-3.1.0.tar.gz"
+   array [
+   ]
+   int32 -1
+method return time=1730000000.2 sender=:1.32 -> destination=:1.9 serial=99 reply_serial=7
+   uint32 42
+method call time=1730000000.3 sender=:1.32 -> destination=:1.23 \
+serial=101 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=Notify
+   string "Firefox"
+   uint32 0
+   string ""
+   string "Download finished"
+   string "gnomespeak-3.1.0.tar.gz"
+   array [
+   ]
+   int32 -1
+"""
+
+
+def test_the_id_from_the_daemons_reply_is_kept():
+    """Dismissal is impossible without it: the id is only in the reply."""
+    feed = NotificationMirror(daemon=DAEMON)
+    feed._proc = FakeProc(TRAFFIC_WITH_REPLY)
+    feed._read_loop()
+    assert [e["id"] for e in feed.entries()] == [42]
+
+
+def test_a_notification_the_shell_forwards_is_not_a_second_row():
+    """GNOME Shell re-sends each Notify; only the original is the event."""
+    feed = NotificationMirror(daemon=DAEMON)
+    feed._proc = FakeProc(TRAFFIC_WITH_REPLY)
+    feed._read_loop()
+    assert len(feed.entries()) == 1
+
+
+def test_an_entry_with_no_reply_has_no_id():
+    """It shows without a dismiss button rather than with one that fails."""
+    feed = NotificationMirror(daemon=DAEMON)
+    feed._proc = FakeProc(TRAFFIC_WITH_REPLY.split("method return")[0])
+    feed._read_loop()
+    assert feed.entries()[0]["id"] == 0
+
+
+def test_the_monitor_watches_the_daemons_replies():
+    feed = NotificationMirror(daemon=DAEMON)
+    command = feed._build_command()
+    assert "member='Notify'" in command[2]
+    assert f"sender='{DAEMON}'" in command[3]
+
+
 def test_mirror_reports_a_missing_dbus_monitor(monkeypatch):
     feed = NotificationMirror(command=["definitely-not-installed"])
     monkeypatch.setattr("shutil.which", lambda name: None)
@@ -395,3 +456,72 @@ def test_install_problems_reports_a_legacy_install(tmp_path):
 def test_a_healthy_install_has_no_problems(tmp_path):
     (tmp_path / shell.EXTENSION_UUID).mkdir()
     assert shell.install_problems(tmp_path) == []
+
+
+# --- status(): why the extension is not answering ---------------------------
+# A fresh install is on disk, enabled, and invisible to the running shell until
+# the next login. Reporting that as "not installed" is what made `vt setup` and
+# `make dev` look like they disagreed.
+
+@pytest.fixture
+def gnome(monkeypatch):
+    """A machine with gnome-extensions present and the extension not on the bus."""
+    monkeypatch.setattr(shell.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(shell, "is_available", lambda: False)
+    monkeypatch.setattr(shell, "is_enabled", lambda: True)
+    monkeypatch.setattr(shell, "load_state", lambda: "unscanned")
+
+
+def test_status_calls_a_fresh_install_pending_login(gnome, tmp_path):
+    (tmp_path / shell.EXTENSION_UUID).mkdir()
+    code, message = shell.status(tmp_path)
+    assert code == "pending-login"
+    assert "next login" in message
+
+
+def test_status_reports_a_broken_install_over_the_login(gnome, tmp_path):
+    code, message = shell.status(tmp_path)
+    assert code == "broken"
+    assert "not installed" in message
+
+
+def test_status_separates_disabled_from_pending(gnome, tmp_path, monkeypatch):
+    (tmp_path / shell.EXTENSION_UUID).mkdir()
+    monkeypatch.setattr(shell, "is_enabled", lambda: False)
+    assert shell.status(tmp_path)[0] == "disabled"
+
+
+def test_status_does_not_send_a_failed_load_around_the_login_loop(gnome, tmp_path, monkeypatch):
+    """An extension that threw on load will throw again after the next login."""
+    (tmp_path / shell.EXTENSION_UUID).mkdir()
+    monkeypatch.setattr(shell, "load_state", lambda: "error")
+    assert shell.status(tmp_path)[0] == "error"
+
+
+def test_status_is_active_when_the_bus_answers(gnome, tmp_path, monkeypatch):
+    monkeypatch.setattr(shell, "is_available", lambda: True)
+    assert shell.status(tmp_path)[0] == "active"
+
+
+def test_status_says_nothing_to_fix_without_gnome(monkeypatch, tmp_path):
+    monkeypatch.setattr(shell.shutil, "which", lambda name: None)
+    assert shell.status(tmp_path)[0] == "no-shell"
+
+
+def test_load_state_reads_the_shells_own_answer(monkeypatch):
+    monkeypatch.setattr(shell.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        shell.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="  State: ACTIVE\n"),
+    )
+    assert shell.load_state() == "active"
+
+
+def test_load_state_calls_an_unknown_uuid_unscanned(monkeypatch):
+    """`gnome-extensions info` fails for an extension installed since login."""
+    monkeypatch.setattr(shell.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        shell.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=2, stdout=""),
+    )
+    assert shell.load_state() == "unscanned"

@@ -73,9 +73,49 @@ vm.runInContext(script + "\n;globalThis.__renderCategory = renderCategory;" +
   "globalThis.__rowsOf = (el) => el.innerHTML;" +
   "globalThis.__renderNotifList = renderNotifList;" +
   "globalThis.__setNotifs = (n) => { notifs = n; };" +
-  "globalThis.__renderTouchpad = renderTouchpad;", sandbox);
+  "globalThis.__renderTouchpad = renderTouchpad;" +
+  "globalThis.__renderClipboard = renderClipboard;" +
+  "globalThis.__setClipHistory = (h) => { clipHistory = h; };" +
+  "globalThis.__paintClipHistory = paintClipHistory;" +
+  "globalThis.__renderHealth = renderHealth;" +
+  "globalThis.__setHealth = (c) => { healthChecks = c; };" +
+  "globalThis.__paintHealth = paintHealth;" +
+  "globalThis.__pinnedHtml = pinnedHtml;", sandbox);
 
 const hostile = "<img src=x onerror=alert(1)>";
+
+if (mode === "clipboard") {
+  // Clipboard contents are whatever was copied on the PC, which is the same
+  // kind of untrusted text as a window title.
+  sandbox.__nav(["clipboard:sync"]);
+  sandbox.__setClipHistory([
+    {seq: 2, ts: Date.now() / 1000, text: `copied ${hostile}`, truncated: false},
+    {seq: 1, ts: Date.now() / 1000, text: "an earlier clip", truncated: true},
+  ]);
+  const out = el("out");
+  sandbox.__renderClipboard(out);
+  nodes.clipHistory = el("clipHistory");
+  sandbox.__paintClipHistory();
+  console.log(out.innerHTML);
+  console.log(nodes.clipHistory.innerHTML);
+}
+
+if (mode === "health") {
+  // Check details come from the PC's own environment: a path, a package name,
+  // a D-Bus error. All of it is text this page did not write.
+  sandbox.__setHealth([
+    {id: "extension", title: `Extension ${hostile}`, state: "warn",
+     detail: `not loaded ${hostile}`, fix: `run vt install-extension ${hostile}`,
+     lost: "windows, typing"},
+    {id: "audio", title: "Audio", state: "ok", detail: "PipeWire available",
+     fix: "", lost: ""},
+  ]);
+  const out = el("out");
+  sandbox.__renderHealth(out);
+  nodes.healthList = el("healthList");
+  sandbox.__paintHealth();
+  console.log(nodes.healthList.innerHTML);
+}
 
 if (mode === "installed") {
   // A .desktop file is a plain text file anyone can drop in ~/.local/share,

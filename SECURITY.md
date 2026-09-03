@@ -70,6 +70,41 @@ What the project *does* commit to:
   turning one action into a broader one, is a vulnerability. (A real example:
   a target named `app:-9` once reached `pkill` as an option rather than a
   process name, turning "quit one app" into "kill every process I own".)
+- **The reachability probe stays a yes or no.** `POST /api/probe` has the
+  desktop ask whether a saved PC answers, because the phone's browser cannot
+  ask another origin itself. It refuses anything but `http`/`https`, drops
+  credentials, paths and queries from the URL, sends no credential of its own,
+  checks at most ten origins per request, and returns only whether each
+  answered -- never a status code, header or body. Widening that answer would
+  turn a paired phone into a port scanner with a readable result, and that
+  would be a vulnerability.
+- **A guest sees the PC's state and controls its media, and nothing else.**
+  With `vt pair --guest`, what stays reachable is `/api/session`,
+  `/api/state`, `/api/apps`, `/api/art`, the YouTube search routes, a live
+  socket, and `/api/do` for media targets. Everything else answers 403:
+  reading or writing the clipboard, reading or dismissing notifications,
+  listing or fetching transferred files, screenshots, input, opening links,
+  wake-on-LAN, reachability probes, diagnostics, the audit log, pairing, and
+  `/api/pair/self` -- which would otherwise have let a guest mint itself a
+  full, never-expiring credential.
+- **The LAN hop can be encrypted, and is not by default.** `vt serve --tls`
+  serves HTTPS with a certificate this machine makes for itself; without it a
+  LAN session is plain HTTP and the token is readable by anyone on the same
+  network. That is a deliberate default (a self-signed certificate makes the
+  phone warn) and is documented here rather than assumed. Off-LAN traffic is
+  unaffected: it rides the tunnel's TLS either way.
+- **A push subscription is a credential, and is treated as one.** Subscribing
+  needs the `notifications` capability, so a guest device cannot; the
+  subscriptions file is written `0600` beside the paired devices, as is the
+  server's VAPID key; and the payload is encrypted for that subscription's own
+  keys, so the push service in the middle carries ciphertext it cannot read.
+- **A scope is enforced on the server.** A device paired with `vt pair --guest`
+  may control media and nothing else, and a device paired with `--hours N`
+  stops working when its time is up. Both are checked where the action is
+  dispatched, not in the page: a guest that talks to the API directly is
+  refused the same way. A way for a guest credential to reach power, input,
+  files, the clipboard, screenshots, the audit log or pairing is a
+  vulnerability.
 - **Configured commands stay argv.** `commands.toml` requires `run` to be a
   list, never a shell string. A path from config to a shell is a vulnerability.
 

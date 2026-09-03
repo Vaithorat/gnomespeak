@@ -31,6 +31,7 @@ class Target:
     position: Optional[float] = None     # seconds
     length: Optional[float] = None       # seconds
     note: str = ""                       # why a capability is missing, shown in the detail view
+    art: str = ""                        # cache key for album art; "" when the player offers none
     actions: list[Action] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

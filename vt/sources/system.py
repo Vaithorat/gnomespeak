@@ -12,6 +12,8 @@ to take the machine down mid-sentence.
 import subprocess
 
 from vt.model import Target, Action
+from vt.procs import run_all
+from vt.sources import ring as ring_source
 
 try:
     import dbus
@@ -100,6 +102,24 @@ def _battery_properties() -> dict:
         return {}
 
 
+# Below this, and discharging, the phone is told once. The PC's own warning is
+# on the screen the user has walked away from, which is the whole point.
+LOW_BATTERY_PERCENT = 15
+
+
+def battery_state() -> dict:
+    """{percent, charging, present} for the PC's own battery, or {} when none."""
+    props = _battery_properties()
+    if not props.get("IsPresent"):
+        return {}
+    code = int(props.get("State", 0))
+    return {
+        "percent": int(round(float(props.get("Percentage", 0)))),
+        "charging": code in (_STATE_CHARGING, 5),
+        "present": True,
+    }
+
+
 def battery_summary() -> str:
     """Charge, state and time remaining, or "" when there is no battery.
 
@@ -141,46 +161,75 @@ def _brightness() -> int:
         return -1
 
 
+def _read_setting(schema: str, key: str) -> str | None:
+    """One `gsettings get`, or None when it could not be read."""
+    return _read_settings([(schema, key)])[0]
+
+
+def _read_settings(pairs: list) -> list:
+    """Several `gsettings get` reads at once, in the order asked.
+
+    Each one is a process that spends its whole life waiting, and the snapshot
+    reads three of them every second. Run together they cost one wait rather
+    than three.
+    """
+    results = run_all([["gsettings", "get", schema, key] for schema, key in pairs])
+    return [out if code == 0 else None for code, out in results]
+
+
+def _desktop_settings() -> tuple:
+    """(banners shown, night light on, theme is dark). None where unreadable."""
+    banners, night_light, theme = _read_settings([
+        (_DND_SCHEMA, _DND_KEY),
+        (_NIGHT_LIGHT_SCHEMA, _NIGHT_LIGHT_KEY),
+        (_THEME_SCHEMA, _THEME_KEY),
+    ])
+    return (
+        None if banners is None else banners.strip() == "true",
+        None if night_light is None else night_light.strip() == "true",
+        None if theme is None else _THEME_DARK in theme,
+    )
+
+
 def _banners_shown() -> bool | None:
     """True when notification banners are on, None when GSettings is unreadable."""
-    try:
-        result = subprocess.run(
-            ["gsettings", "get", _DND_SCHEMA, _DND_KEY],
-            capture_output=True, text=True, timeout=2,
-        )
-        if result.returncode != 0:
-            return None
-        return result.stdout.strip() == "true"
-    except Exception:
-        return None
+    value = _read_setting(_DND_SCHEMA, _DND_KEY)
+    return None if value is None else value.strip() == "true"
 
 
 def _night_light_on() -> bool | None:
     """True when night light is on, None when GSettings is unreadable."""
-    try:
-        result = subprocess.run(
-            ["gsettings", "get", _NIGHT_LIGHT_SCHEMA, _NIGHT_LIGHT_KEY],
-            capture_output=True, text=True, timeout=2,
-        )
-        if result.returncode != 0:
-            return None
-        return result.stdout.strip() == "true"
-    except Exception:
-        return None
+    value = _read_setting(_NIGHT_LIGHT_SCHEMA, _NIGHT_LIGHT_KEY)
+    return None if value is None else value.strip() == "true"
 
 
 def _theme_is_dark() -> bool | None:
     """True when the GNOME color scheme prefers dark, None when unreadable."""
-    try:
-        result = subprocess.run(
-            ["gsettings", "get", _THEME_SCHEMA, _THEME_KEY],
-            capture_output=True, text=True, timeout=2,
-        )
-        if result.returncode != 0:
-            return None
-        return _THEME_DARK in result.stdout
-    except Exception:
-        return None
+    value = _read_setting(_THEME_SCHEMA, _THEME_KEY)
+    return None if value is None else _THEME_DARK in value
+
+
+# Offered as fixed choices rather than a number the phone types: a timer is
+# set one-handed, and "30" and "300" are one keystroke apart.
+SLEEP_MINUTES = (15, 30, 60)
+
+
+def _timer_targets() -> list:
+    """A row per pending timer, so nothing the PC will do later is invisible."""
+    from vt.schedule import remaining_words, scheduler
+
+    rows = []
+    for job in scheduler().jobs():
+        rows.append(Target(
+            id=f"timer:{job['id']}",
+            kind="system",
+            title=job["label"],
+            subtitle="Scheduled on the PC",
+            icon="⏳",
+            status=remaining_words(job["remaining"]),
+            actions=[Action(id="cancel", label="Cancel")],
+        ))
+    return rows
 
 
 def get_system_targets() -> list[Target]:
@@ -200,14 +249,31 @@ def get_system_targets() -> list[Target]:
             Action(id="awake_off" if _awake_cookie is not None else "awake_on",
                    label="Let it sleep" if _awake_cookie is not None else "Keep awake"),
             Action(id="suspend", label="Suspend"),
+            *[Action(id=f"suspend_in_{m}", label=f"Suspend in {m} min")
+              for m in SLEEP_MINUTES],
             Action(id="restart", label="Restart", kind="confirm"),
             Action(id="shutdown", label="Shut down", kind="confirm"),
         ],
     ))
 
+    targets.extend(_timer_targets())
+
+    noisy = ring_source.ringing()
+    targets.append(Target(
+        id="system:ring",
+        kind="system",
+        title="Ring this PC",
+        subtitle="Play an alert and show a banner",
+        icon="🔔",
+        status="ringing" if noisy else "ready",
+        # One button either way: a stop button that appears only while the PC
+        # is ringing is the one that can never be pressed by mistake.
+        actions=[Action(id="stop", label="Stop ringing")] if noisy
+        else [Action(id="ring", label="Ring")],
+    ))
+
     level = _brightness()
-    night_light = _night_light_on()
-    dark_theme = _theme_is_dark()
+    banners, night_light, dark_theme = _desktop_settings()
     if level >= 0 or night_light is not None or dark_theme is not None:
         actions_list = []
         if level >= 0:
@@ -240,7 +306,6 @@ def get_system_targets() -> list[Target]:
             actions=actions_list,
         ))
 
-    banners = _banners_shown()
     if banners is not None:
         targets.append(Target(
             id="system:notifications",
@@ -410,49 +475,77 @@ def _set_dnd(enabled: bool) -> dict:
 def execute(target_spec: str, action_id: str, value: float | None = None) -> dict:
     """Run one system action. `target_spec` is "power", "display" or "notifications"."""
     if target_spec == "power":
-        if action_id == "lock":
-            return _lock()
-        if action_id == "suspend":
-            return _login1_call("Suspend", "Suspending")
-        if action_id == "restart":
-            return _login1_call("Reboot", "Restarting")
-        if action_id == "shutdown":
-            return _login1_call("PowerOff", "Shutting down")
-        if action_id == "battery":
-            summary = battery_summary()
-            return {"ok": bool(summary), "message": summary or "No battery on this machine"}
-        if action_id == "awake_on":
-            return _set_awake(True)
-        if action_id == "awake_off":
-            return _set_awake(False)
-        return {"ok": False, "message": f"Unknown power action: {action_id}"}
+        return _execute_power(action_id)
+
+    if target_spec == "ring":
+        if action_id == "ring":
+            return ring_source.ring()
+        if action_id in ("stop", "silence"):
+            return ring_source.stop()
+        return {"ok": False, "message": f"Unknown ring action: {action_id}"}
 
     if target_spec == "display":
-        if action_id == "brightness":
-            if value is None:
-                return {"ok": False, "message": "Brightness action requires a value"}
-            return _set_brightness(value)
-        if action_id == "brightness_up":
-            return _step_brightness(True)
-        if action_id == "brightness_down":
-            return _step_brightness(False)
-        if action_id == "night_light_on":
-            return _set_night_light(True)
-        if action_id == "night_light_off":
-            return _set_night_light(False)
-        if action_id == "theme_dark":
-            return _set_theme(True)
-        if action_id == "theme_light":
-            return _set_theme(False)
-        return {"ok": False, "message": f"Unknown display action: {action_id}"}
+        return _execute_display(action_id, value)
 
     if target_spec == "notifications":
-        if action_id == "dnd_on":
-            return _set_dnd(True)
-        if action_id == "dnd_off":
-            return _set_dnd(False)
-        if action_id == "toggle":
-            return _set_dnd(_banners_shown() is not False)
-        return {"ok": False, "message": f"Unknown notifications action: {action_id}"}
+        return _execute_notifications(action_id)
 
     return {"ok": False, "message": f"Unknown system target: {target_spec}"}
+
+
+def _execute_power(action_id: str) -> dict:
+    if action_id.startswith("suspend_in_"):
+        from vt.schedule import scheduler
+
+        minutes = action_id[len("suspend_in_"):]
+        if not minutes.isdigit():
+            return {"ok": False, "message": f"Unknown power action: {action_id}"}
+        return scheduler().add(
+            "system:power", "suspend", int(minutes) * 60, label="Suspend"
+        )
+    if action_id == "lock":
+        return _lock()
+    if action_id == "suspend":
+        return _login1_call("Suspend", "Suspending")
+    if action_id == "restart":
+        return _login1_call("Reboot", "Restarting")
+    if action_id == "shutdown":
+        return _login1_call("PowerOff", "Shutting down")
+    if action_id == "battery":
+        summary = battery_summary()
+        return {"ok": bool(summary), "message": summary or "No battery on this machine"}
+    if action_id == "awake_on":
+        return _set_awake(True)
+    if action_id == "awake_off":
+        return _set_awake(False)
+    return {"ok": False, "message": f"Unknown power action: {action_id}"}
+
+
+def _execute_display(action_id: str, value: float | None) -> dict:
+    if action_id == "brightness":
+        if value is None:
+            return {"ok": False, "message": "Brightness action requires a value"}
+        return _set_brightness(value)
+    if action_id == "brightness_up":
+        return _step_brightness(True)
+    if action_id == "brightness_down":
+        return _step_brightness(False)
+    if action_id == "night_light_on":
+        return _set_night_light(True)
+    if action_id == "night_light_off":
+        return _set_night_light(False)
+    if action_id == "theme_dark":
+        return _set_theme(True)
+    if action_id == "theme_light":
+        return _set_theme(False)
+    return {"ok": False, "message": f"Unknown display action: {action_id}"}
+
+
+def _execute_notifications(action_id: str) -> dict:
+    if action_id == "dnd_on":
+        return _set_dnd(True)
+    if action_id == "dnd_off":
+        return _set_dnd(False)
+    if action_id == "toggle":
+        return _set_dnd(_banners_shown() is not False)
+    return {"ok": False, "message": f"Unknown notifications action: {action_id}"}

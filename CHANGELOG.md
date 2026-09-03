@@ -2,7 +2,250 @@
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-09-03
+
 ### Added
+- **A live channel** (`vt/live.py`, `GET /ws`) — the phone holds a WebSocket
+  and the server pushes only the targets that changed, so a quiet PC costs no
+  traffic at all instead of a full snapshot every second. The 1 Hz poll remains
+  the fallback for a browser that cannot hold a socket, and `/api/state` still
+  serves the same snapshot. Authentication is a single-use ticket from
+  `POST /api/ws-ticket`, because a WebSocket handshake carries no headers and a
+  device secret must never travel in a URL. Pointer and scroll deltas ride the
+  socket too, replacing a POST every 50 ms. An action now also wakes the
+  collector, so a change the phone asked for comes back in a median 253 ms
+  (12 samples on this machine after all of the sources below were added; worst
+  372, and two of the twelve over the 300 ms the roadmap asked for) rather than
+  at the end of the next second.
+- **Starts with the desktop session** (`vt install-service`, `vt/service.py`) —
+  a systemd *user* unit bound to `graphical-session.target`, because every
+  source vt reads (MPRIS, the Shell extension, the session bus, PipeWire) lives
+  in the session and does not exist outside it. The unit requires pairing,
+  since a service prints its banner where nobody reads it; `vt pair` mints a
+  code from the terminal. `vt uninstall-service` leaves nothing behind, and
+  `vt doctor` reports the unit's state.
+- **Installable web app and Android share target** (`vt/ui/manifest.webmanifest`,
+  `vt/ui/sw.js`) — a home-screen icon, a fullscreen page, an offline "PC
+  unreachable" screen instead of a browser error, and a GnomeSpeak entry in
+  Android's share sheet. A share POST carries no credential, so the service
+  worker parks the payload and the page — which holds the credential — uploads
+  it through the existing endpoints. Still nothing installed from a store.
+- **Per-application volume** (`vt/sources/audio.py`) — every stream `wpctl`
+  lists becomes its own slider and mute, so the game goes down without the call
+  going with it. A stream that ends mid-session drops out of the snapshot.
+- **Screenshot on demand** (`vt/sources/screenshot.py`, `GET /api/screenshot`) —
+  one still frame through `org.freedesktop.portal.Screenshot`, on request only,
+  deleted from disk the moment it has been served. Declining on the PC reads as
+  "you declined", not as a D-Bus error. Explicitly not a stream.
+- **Album art and a live scrubber** (`vt/sources/art.py`, `GET /api/art`) — art
+  is served by a key some player published rather than by a URL the phone
+  names, size-capped, and checked to be an actual image; the position bar
+  interpolates locally so it moves smoothly on one message per change.
+- **Notifications arrive rather than being found** — the mirror hands each new
+  notification to the live channel, which pushes it to every open phone; the
+  three-second poll on that screen is now only the fallback for a phone with no
+  socket. A push waits 0.3 s first, because the daemon's reply carries the id
+  that makes "Dismiss" work and it lands just after the call the mirror read.
+- **The extension travels with the wheel** — `pip install gnomespeak` now
+  carries `gnome-extension/gnomespeak@local/` as data, and
+  `vt install-extension` finds it there when there is no checkout, so getting
+  started no longer means `git clone`. A checkout still wins over an installed
+  copy, so a developer always installs the tree they are editing.
+- **Notifications can be dismissed** — the mirror now watches the notification
+  daemon's replies as well as the calls, so it keeps the id that
+  `CloseNotification` needs, and stops counting GNOME Shell's forwarded copy as
+  a second notification. Activating an action stays out of reach: an app
+  listens for `ActionInvoked` from the daemon's own bus name, and vt is not the
+  daemon.
+- **Ring this PC, and the phone's battery on the PC** (`vt/sources/ring.py`) —
+  an alert sound and a banner on demand, and a phone that reports its own
+  battery over the live channel appears as a target beside the PC's. The ring
+  runs on its own thread and can be stopped from the phone (`system:ring stop`,
+  or `{type:"ring_stop"}` on the live channel); the button on the phone says
+  "Stop ringing" for exactly as long as the PC is making noise, and a ring
+  nobody stops falls silent after a minute.
+- **`vt package-extension`** (`vt/package.py`) — builds the archive
+  extensions.gnome.org accepts, and refuses one it would reject: a string
+  `version`, a missing `url`, or a `session-modes` that claims the lock screen.
+  The zip carries the store uuid while the checkout keeps `gnomespeak@local`,
+  so publishing does not rename anyone's working install. `vt/shell.py` now
+  accepts either uuid, in the user's extensions directory or a system-wide one,
+  and says so when both are installed -- they claim the same D-Bus name, and
+  the loser of that race looks like a broken extension rather than a second one.
+- **An unreachable PC is marked in the switcher** (`POST /api/probe`) — the
+  phone cannot ask another origin whether it is up (the browser refuses the
+  cross-origin request, and the page's own CSP says `connect-src 'self'`), so
+  the PC asks and answers yes or no. Never a status code, a header or a body:
+  the answer is what a switcher needs to grey out a machine and nothing that
+  would make the desktop a readable port scanner. The page says the check came
+  from the PC, because a machine the PC can see may still be out of the
+  phone's reach.
+- **The security log on the phone** (`GET /api/audit`) — every action and every
+  rejection, with rejections rendered as prominently as actions.
+- **A switcher for more than one PC** — saved machines live in the page, and
+  switching is navigation, so each PC keeps its own pairing and no new trust
+  relationship is created between them.
+
+- **Open a link on the PC** (`POST /api/open`, `vt/sources/open_url.py`) — the
+  phone's clipboard screen grows an "Open on the PC" button for anything that
+  is a link, and a page shared from Android's share sheet opens by itself. Only
+  `http` and `https`: a desktop's URL handlers reach far past the browser, and
+  the link arrives as free text from a phone that may be passing on something
+  it was sent.
+- **Choose where sound goes** (`audio:sink`, `audio:source`) — every output and
+  input `wpctl` lists, with the current one as the row's status and the others
+  as buttons. wpctl exits 0 for a device WirePlumber then declines to use, so
+  the switch is confirmed by reading the default back: an HDMI socket with no
+  cable in it now says "the PC would not switch to it" instead of claiming the
+  sound moved.
+- **What the machine is doing** (`system:machine`, `vt/sources/monitor.py`) —
+  numbers re-read every five seconds and rounded to the nearest five per cent,
+  because a row that changed every second would be a patch to every phone every
+  second -- the 1 Hz poll again, wearing a socket. An idle PC sends two
+  messages in twelve seconds.
+  CPU, memory, disk, uptime and the warmest sensor, as one row. The CPU figure
+  is left off the first tick rather than reported as psutil's since-boot
+  average, and the temperature is read from the thermal zones on a slow cache
+  because `psutil.sensors_temperatures()` costs 200 ms.
+- **The keys the focused app answers to** (`vt/sources/keypads.py`) — a pad for
+  the browser, VLC, mpv, a presentation, a terminal, an editor or a file
+  manager, chosen by the focused window. The phone sends the *name* of a key
+  and the table decides the chord, so a request that is not in it reaches
+  nothing; an application with no entry gets no pad rather than a guessed one.
+- **Bluetooth device battery** — BlueZ publishes it on the same object the
+  device list already reads, so connected headphones now say how much they have
+  left.
+- **Recently copied on the PC** (`GET/DELETE /api/clipboard/history`) — the last
+  couple of dozen clips, kept in memory only, started by opening the clipboard
+  screen, and cleared by one button because a clipboard sometimes holds a
+  password.
+- **What works** (`GET /api/diagnostics`, `vt/diagnostics.py`) — `vt doctor` as
+  a screen on the phone, because the person debugging is holding the phone and
+  the PC is across the room. Every row says what is true, what it costs and
+  what to do.
+- **Sleep timers** (`vt/schedule.py`) — "Suspend in 15/30/60 min" on the power
+  row, a row of its own per pending timer with a cancel button, and jobs that
+  live in memory because a timer that survived a restart would fire into a
+  desktop that has been doing something else for an hour.
+- **Guest devices and per-device scopes** (`vt pair --guest --hours N`) —
+  a guest keeps the state, the media controls and the socket; reading the
+  clipboard, reading or dismissing notifications, listing files, diagnostics,
+  probes, wake packets and `/api/pair/self` all answer 403. That last one
+  mattered most: without it a guest could have minted itself a full,
+  never-expiring credential in one call. a
+  paired phone can be limited to media, and given a credential that expires by
+  itself. A refusal is 403 rather than 401, because 401 makes the page throw
+  its credential away and ask to pair again. Every phone paired before this is
+  unchanged: no scope stored means every capability.
+- **A picture from the phone as the wallpaper** (`POST /api/files/wallpaper`) —
+  the share sheet already lands a photo in the transfer folder; this is the tap
+  that puts it on the desktop. Both the light and dark keys are set, and the
+  file has to be a real image rather than something merely named like one.
+- **Pinned targets and home-screen quick actions** — four things get used every
+  evening and the rest almost never, so a target can be pinned to the top of
+  the page; and the installed icon's long-press menu opens the touchpad,
+  clipboard, screenshot or notifications directly.
+- **Dictate to the PC** — the phone already has speech recognition and the
+  microphone permission, and the PC already types into the focused window. No
+  audio ever reaches the PC, only the text; the button is absent on a browser
+  without speech rather than present and inert.
+
+- **Wake another PC** (`POST /api/wake`, `vt wake`) — the switcher already knew
+  about the other machines and already asked whether they answer; a machine
+  that is awake can now send the magic packet to one that is not, so "not
+  answering" becomes "wake it". Nothing acknowledges a wake packet, so the
+  answer says "sent" and the row re-checks a few seconds later.
+- **Join a saved Wi-Fi network** — the Wi-Fi row shows the network it is on and
+  offers the other saved ones. The list is cached because it changes about once
+  a month and the snapshot is collected once a second, and a name the phone was
+  holding from an older snapshot is checked against NetworkManager's own list
+  before `nmcli` sees it.
+- **The PC says when the phone is nearly flat** (`vt/notify.py`) — a banner on
+  the PC when a connected phone crosses 15% and is not charging, once per
+  crossing rather than once per report. The phone's own warning is easy to miss
+  from across the room, which is the whole reason this direction exists.
+
+- **Removable drives** (`vt/sources/disks.py`) — a row per mounted removable
+  drive with an Eject button, built from the kernel's own removable flag so
+  twenty snap loopbacks and the internal disk stay out of it. Ejecting
+  unmounts and then powers the drive down; a drive that unmounted but would not
+  power off is reported as safe to remove rather than as a failure.
+- **Battery alerts in both directions** — the PC raises a banner when a
+  connected phone crosses 15% while discharging, and pushes an alert to the
+  phone when its own battery does the same. Both fire on the crossing, not on
+  the state: a machine sitting at 9% reports the same number every second.
+
+- **Mute one app's notifications** (`POST /api/notifications/mute`) — press and
+  hold a notification on the phone and that app stops arriving, along with the
+  backlog it just made. In memory and for this session only: it is "not
+  tonight", not a settings screen, and it drops the app before the socket
+  rather than hiding rows after them.
+
+- **Notifications reach a phone whose page is closed** (`vt/push.py`,
+  `/api/push/*`) — Web Push, which is the browser's own answer to the one thing
+  an app could do that this could not. The page subscribes, the PC posts to the
+  endpoint the browser hands back, and the service worker wakes up to show it.
+  Still no app and no store.
+
+  The encryption (RFC 8291) and the authorization (RFC 8292) are implemented
+  here against `cryptography` rather than by adding a push library: the one
+  available today pins a newer `cryptography` than other tools accept, and the
+  two specifications together are about a hundred lines. RFC 8291's own worked
+  example is in the test suite, so the bytes are checked against the standard
+  rather than against themselves, and one test posts a real signed, encrypted
+  request at a local stand-in for a push service.
+
+  A phone that is looking at the page is skipped -- it already got the
+  notification over the socket -- and a subscription the push service calls
+  gone is forgotten rather than retried. `pip install gnomespeak[push]`; without
+  it, `vt doctor` and the phone's own "What works" screen say so.
+
+- **Macros** (`commands.toml`) — a command may carry `steps` instead of `run`:
+  a list of the same target-and-action pairs the phone sends, with optional
+  waits between them. "Movie mode" is do-not-disturb, night light, and the
+  volume down, on one button. Steps cannot name a program, so the argv boundary
+  that keeps this file away from a shell does not move, and a macro stops at
+  the first step that fails rather than reporting success for half of itself.
+
+- **HTTPS on the LAN** (`vt serve --tls`, `vt/tls.py`) — off the LAN everything
+  already rode the tunnel's TLS; on the LAN the token travelled in a header
+  over plain HTTP, where anyone on the same Wi-Fi could read it. The PC now
+  makes its own certificate covering its LAN address, hostname and loopback,
+  keeps the key `0600`, and prints the SHA-256 fingerprint at startup, because
+  a self-signed certificate is only as good as the person checking it. Opt-in,
+  since the first minute is worse (the phone warns) and every hour after it is
+  better. `vt pair` probes the port and hands out an `https://` link when the
+  server is listening for one, so a QR code cannot carry the wrong scheme.
+
+### Changed
+- **The snapshot is collected in about 75 ms rather than 230** (`vt/procs.py`,
+  `vt/state.py`) — `wpctl get-volume` and `gsettings get` are processes that
+  spend their whole lives waiting, and the collector ran them one after
+  another; they now wait together. The two sources that touch no D-Bus (the
+  `/proc` app scan and the `wpctl` audio rows) run on their own threads while
+  the D-Bus sources, which share one connection and must stay serialized, take
+  their turn; both are spliced back at their own positions. The settle after an
+  action is 0.10 s rather than 0.15 s. All of it is the live channel's latency
+  budget.
+- **The README leads with the thesis** rather than the feature list, which is
+  what the roadmap's release gate asks for.
+
+### Fixed
+- **Album art and screenshots rendered as the browser's broken-image icon.**
+  Both are fetched with a credential and handed to the `<img>` as an object
+  URL, because an `<img src>` cannot carry a header and the credential must not
+  travel in a URL — but the page's own CSP said `img-src 'self' data:`, and a
+  `blob:` URL is neither. The policy now names `blob:`. Belt and braces: an
+  image that still fails to load removes itself rather than leaving a
+  placeholder, since a broken icon says "this is wrong" about a player that is
+  playing perfectly well.
+- **`make dev` no longer looks like it contradicts the setup it just ran.**
+  "Installed" and "not loaded" were both true and neither said why: a GNOME
+  Shell extension only loads at session start. `vt/shell.py` now reports disk,
+  dconf and the running shell separately (`status()`, `load_state()`), so setup
+  says "installed — log out and back in to load it", the server banner names
+  the fix that actually applies, and an extension that failed to load is no
+  longer told to reinstall itself.
 - **Window control on COSMIC** (`sources/cosmic_windows.py`) — Focus,
   Minimize, Maximize, and Close now work under COSMIC (System76's compositor)
   without the GNOME extension, by talking its own

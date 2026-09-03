@@ -4,6 +4,7 @@ import argparse
 import shutil
 import sys
 import subprocess
+from vt import package
 from vt.actions import execute_action
 from vt.state import get_snapshot
 
@@ -216,16 +217,28 @@ def cmd_doctor(args):
     from vt import shell as shell_mod
 
     if not shell_mod.is_available():
-        problems = shell_mod.install_problems()
-        if problems:
+        code, message = shell_mod.status()
+        if code == "broken":
             # Naming the on-disk state is the difference between "you never
             # installed it" and "your install broke when the project was
             # renamed" -- which from the phone look identical.
+            problems = shell_mod.install_problems()
             checks.append(("⚠", "Extension", "Not active — " + problems[0]))
             for extra in problems[1:]:
                 checks.append((" ", "", extra))
             checks.append((" ", "", "fix: vt install-extension, then log out and back in"))
+        elif code == "disabled":
+            checks.append(("⚠", "Extension", message))
+            checks.append((" ", "", "fix: vt install-extension, then log out and back in"))
+        elif code == "error":
+            checks.append(("⚠", "Extension", "Installed, but GNOME Shell could not load it"))
+            checks.append((" ", "", f"details: gnome-extensions info {shell_mod.installed_uuid()}"))
+        elif code == "no-shell":
+            checks.append(("ℹ", "Extension", "No GNOME Shell on this machine"))
         else:
+            # The ordinary case right after an install: nothing is wrong and
+            # rerunning the installer changes nothing. A Shell extension only
+            # loads at session start.
             checks.append(("ℹ", "Extension", "Installed but not loaded (log out and back in)"))
         checks.append((" ", "", "without it: no window, workspace, touchpad or"))
         checks.append((" ", "", "typing control (media and system control still work)"))
@@ -264,6 +277,25 @@ def cmd_doctor(args):
         checks.append((" ", "", unavailable_message()))
         warn_count += 1
 
+    # Check 5c: the unit that makes this a service rather than a command you
+    # have to remember. Not a failure when absent -- `make dev` is a supported
+    # way to run -- but the difference between "running" and "will be running
+    # after the next login" is worth stating.
+    from vt import service as service_mod
+
+    svc = service_mod.status()
+    if not svc["available"]:
+        pass  # No systemd user manager; nothing to report and nothing to fix.
+    elif not svc["installed"]:
+        checks.append(("ℹ", "Autostart", "Not installed — start it with `make dev` or `vt serve`"))
+        checks.append((" ", "", "fix: vt install-service (starts with your session)"))
+    elif svc["active"]:
+        checks.append(("✓", "Autostart", "gnomespeak.service is running"))
+        ok_count += 1
+    else:
+        checks.append(("⚠", "Autostart", svc["detail"] or "installed but not running"))
+        warn_count += 1
+
     if mirror().available():
         checks.append(("✓", "Notifications", "dbus-monitor available for mirroring"))
         ok_count += 1
@@ -284,6 +316,28 @@ def cmd_doctor(args):
         ok_count += 1
     except Exception as e:
         checks.append(("⚠", "File transfer", f"Cannot write the transfer folder: {e}"))
+        warn_count += 1
+
+    # Check 5d: the small tools the newer targets shell out to. None of them is
+    # worth a failure -- each backs one action, and each already says so when
+    # tapped -- but "Eject did nothing" is a much worse way to learn that
+    # udisks2 is missing than a line here before anyone picks up a phone.
+    from vt.sources.ring import player_argv
+
+    extras = [
+        ("notify-send", bool(shutil.which("notify-send")), "banners on the PC"),
+        ("a sound player", bool(player_argv()), "ringing this PC"),
+        ("udisksctl", bool(shutil.which("udisksctl")), "ejecting a USB drive"),
+    ]
+    absent = [(tool, feature) for tool, present, feature in extras if not present]
+    if not absent:
+        checks.append(("✓", "Extras", "notify-send, sound player and udisksctl"))
+        ok_count += 1
+    else:
+        checks.append(("ℹ", "Extras", f"{len(absent)} tool(s) missing"))
+        for tool, feature in absent:
+            checks.append((" ", "", f"no {tool} — {feature} is unavailable"))
+        checks.append((" ", "", "fix: scripts/setup-system.sh, or install them yourself"))
         warn_count += 1
 
     # Check 5b: COSMIC window control -- only relevant as a fallback, so skip
@@ -392,6 +446,29 @@ def _print_qr(text: str):
         print(f"  Could not render QR code: {e}")
 
 
+def _serves_https(host: str, port: int, timeout: float = 0.6) -> bool:
+    """Whether a TLS handshake completes on that port.
+
+    `vt pair` runs in a second terminal and cannot ask the server how it was
+    started, so it asks the port instead: a link with the wrong scheme is a QR
+    code that fails on the phone with nothing on screen to explain it.
+    """
+    import socket
+    import ssl
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    # The certificate is this machine's own; the question here is only whether
+    # the port speaks TLS at all.
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as raw:
+            with context.wrap_socket(raw):
+                return True
+    except Exception:
+        return False
+
+
 def _lan_url(port: int) -> str:
     import socket
 
@@ -402,7 +479,8 @@ def _lan_url(port: int) -> str:
         sock.close()
     except Exception:
         host = "127.0.0.1"
-    return f"http://{host}:{port}"
+    scheme = "https" if _serves_https(host, port) else "http"
+    return f"{scheme}://{host}:{port}"
 
 
 def cmd_pair(args):
@@ -411,7 +489,12 @@ def cmd_pair(args):
     from vt.tunnel import clear_public_url, load_public_url, public_url_is_live
 
     codes = PairingCodes(ttl=args.minutes * 60.0 if args.minutes else CODE_TTL)
-    code = codes.issue(args.label or "cli")
+    # A guest phone gets the visitor's terms: media only, and gone by itself
+    # after a few hours. The person deciding that is the one at the keyboard,
+    # so it is settled when the code is issued rather than when it is redeemed.
+    scope = "guest" if getattr(args, "guest", False) else "full"
+    device_ttl = float(getattr(args, "hours", 0) or 0) * 3600.0
+    code = codes.issue(args.label or "cli", scope=scope, device_ttl=device_ttl)
 
     # The pairing link is what makes this one scan instead of ten typed
     # characters, so it has to point at the origin the phone will actually use:
@@ -438,6 +521,12 @@ def cmd_pair(args):
 
     print(f"\n  Pairing code: {format_code(code)}")
     print(f"  Valid for:    {minutes} min, one device")
+    if scope == "guest":
+        print("  Grants:       media only — no power, input, files or clipboard")
+    if device_ttl:
+        hours = device_ttl / 3600.0
+        shown = f"{hours:.0f}" if hours == int(hours) else f"{hours:.1f}"
+        print(f"  Access ends:  {shown} hours after pairing")
     print(f"  Link:         {link}")
     if stale:
         print(f"\n  Note: the saved tunnel URL ({stale})")
@@ -562,6 +651,7 @@ def cmd_serve(args):
         tunnel=args.tunnel or bool(args.tunnel_name),
         tunnel_name=args.tunnel_name or "",
         pair_on_start=args.pair,
+        tls=getattr(args, "tls", False),
     )
 
 
@@ -612,18 +702,9 @@ ENABLED_KEY = ["org.gnome.shell", "enabled-extensions"]
 
 def _enabled_extensions():
     """The dconf list of enabled extension uuids, or None if unreadable."""
-    import ast
+    from vt.shell import enabled_uuids
 
-    try:
-        result = subprocess.run(
-            ["gsettings", "get"] + ENABLED_KEY, capture_output=True, text=True, timeout=5
-        )
-        if result.returncode != 0:
-            return None
-        value = ast.literal_eval(result.stdout.strip())
-        return value if isinstance(value, list) else None
-    except Exception:
-        return None
+    return enabled_uuids()
 
 
 def _write_enabled_extensions(uuids) -> bool:
@@ -693,27 +774,79 @@ def _extension_already_set_up() -> bool:
     there and unbroken, and the uuid is in the enabled list -- an extension that
     is installed but disabled behaves exactly like one that was never installed.
     """
-    from vt.shell import EXTENSION_UUID, install_problems
+    from vt.shell import installed_uuid, install_problems, is_available, is_enabled, load_state
 
     if not shutil.which("gnome-extensions"):
         print("ℹ No GNOME Shell here — skipping the extension")
         print("  Window, workspace, touchpad and typing control need it; everything else works")
         return True
 
-    enabled = _enabled_extensions()
+    if _installed_copy_is_stale():
+        # `pip install -U gnomespeak` replaces the source but cannot touch a
+        # copy already sitting in the extensions directory, and a Shell
+        # extension one version behind the server it answers is the exact state
+        # `vt doctor` calls "running an older build". Reinstalling is two file
+        # operations, so the upgrade path repairs itself rather than waiting
+        # for someone to notice a feature missing from the phone.
+        return False
+
     # An unreadable setting (no gsettings, no dconf) is not evidence of a
-    # problem, and reinstalling on every run to chase it would help nobody.
-    listed = enabled is None or EXTENSION_UUID in enabled
-    if not install_problems() and listed:
-        print("✓ GNOME extension installed")
+    # problem, and reinstalling on every run to chase it would help nobody --
+    # `is_enabled` treats it as enabled for that reason, and accepts either the
+    # local uuid or the one the store install carries.
+    if not install_problems() and is_enabled():
+        # "installed" alone is what made `make dev`'s later "not loaded" note
+        # read as a contradiction: both were true, and neither said that the
+        # gap between them closes at the next login rather than by rerunning
+        # anything.
+        if is_available():
+            print("✓ GNOME extension installed and loaded")
+        elif load_state() == "error":
+            print("⚠ GNOME extension installed but it failed to load")
+            print(f"  Details: gnome-extensions info {installed_uuid()}")
+        else:
+            print("✓ GNOME extension installed — log out and back in to load it")
         return True
     return False
 
 
+def _installed_copy_is_stale() -> bool:
+    """Whether the installed extension is a copy older than the one shipped here.
+
+    A symlinked install is never stale -- it *is* the source. A copy is what a
+    `pip install` gets, and nothing else updates it: pip replaces its own data
+    directory and leaves the extensions directory alone.
+    """
+    from vt.shell import extensions_dir, installed_uuid
+
+    target = extensions_dir() / installed_uuid()
+    if target.is_symlink() or not target.is_dir():
+        return False
+    source = package.source_dir()
+    if not (source / "metadata.json").is_file():
+        return False
+    return package.metadata_version(source) > package.metadata_version(target)
+
+
+def _refresh_installed_copy(target, source):
+    """Bring an installed copy up to the shipped version, or leave it alone."""
+    if target.is_symlink():
+        print(f"  Extension already installed at {target}")
+        return
+    installed = package.metadata_version(target)
+    shipped = package.metadata_version(source)
+    if shipped <= installed:
+        print(f"  Extension already installed at {target}")
+        return
+    # Replaced rather than merged: a file dropped from a later version of the
+    # extension would otherwise stay behind and keep being loaded.
+    shutil.rmtree(target)
+    shutil.copytree(source, target)
+    print(f"✓ Updated the extension at {target} (version {installed} → {shipped})")
+
+
 def cmd_install_extension(args):
     """Install the GNOME extension."""
-    from pathlib import Path
-
     from vt.shell import EXTENSION_UUID, LEGACY_EXTENSION_UUIDS, extensions_dir
 
     if_needed = getattr(args, "if_needed", False)
@@ -721,8 +854,9 @@ def cmd_install_extension(args):
         return
 
     try:
-        # Find the extension source
-        ext_src = Path(__file__).parent.parent / "gnome-extension" / EXTENSION_UUID
+        # Find the extension source: the checkout when there is one, the copy
+        # the wheel installed when there is not.
+        ext_src = package.source_dir()
         if not ext_src.exists():
             # Not fatal under --if-needed: this is a setup step running
             # alongside others, and every feature the extension backs already
@@ -766,16 +900,23 @@ def cmd_install_extension(args):
             target.unlink()
             print("  Replacing a dangling extension symlink")
         if target.exists():
-            print(f"  Extension already installed at {target}")
-        else:
-            # Symlink (so edits are live)
+            _refresh_installed_copy(target, ext_src)
+        elif package.is_checkout(ext_src):
+            # A checkout is the one source worth linking to: it stays where it
+            # is, and an edit to extension.js is then live at the next login.
             try:
                 target.symlink_to(ext_src)
                 print(f"✓ Symlinked extension to {target}")
             except Exception:
-                # Fallback to copy
                 shutil.copytree(ext_src, target, dirs_exist_ok=True)
                 print(f"✓ Copied extension to {target}")
+        else:
+            # Anything else is a directory pip owns, and pip deletes it on the
+            # next upgrade or uninstall. GNOME Shell drops an extension whose
+            # symlink dangles in silence, so copy instead and take on the job
+            # of keeping the copy current (see _refresh_installed_copy).
+            shutil.copytree(ext_src, target, dirs_exist_ok=True)
+            print(f"✓ Copied extension to {target}")
 
         ok, note = enable_extension(EXTENSION_UUID)
         print(("✓ " if ok else "⚠ ") + note)
@@ -790,10 +931,122 @@ def cmd_install_extension(args):
         sys.exit(1)
 
 
+def cmd_open(args):
+    """Open a link on this PC, the same way the phone does."""
+    from vt.sources.open_url import open_url
+
+    result = open_url(args.url)
+    print(("✓ " if result["ok"] else "✗ ") + result["message"])
+    if not result["ok"]:
+        sys.exit(1)
+
+
+def cmd_wake(args):
+    """Send a wake-on-LAN packet to another machine."""
+    from vt.sources.wake import wake
+
+    result = wake(args.mac, broadcast=args.broadcast, port=args.port)
+    print(("✓ " if result["ok"] else "✗ ") + result["message"])
+    if result["ok"]:
+        # Nothing acknowledges a magic packet, and saying "woken" would be a
+        # claim this cannot check.
+        print("  Nothing acknowledges a wake packet; check the machine itself.")
+    else:
+        sys.exit(1)
+
+
+def cmd_package_extension(args):
+    """Build the zip to upload to extensions.gnome.org."""
+    from pathlib import Path
+
+    result = package.build(
+        out_dir=Path(args.out) if args.out else None,
+        uuid=args.uuid,
+    )
+    if not result["ok"]:
+        print(f"✗ {result['message']}")
+        for problem in result.get("problems", [])[1:]:
+            print(f"  also: {problem}")
+        sys.exit(1)
+
+    print(f"✓ {result['message']}")
+    print(f"  uuid: {result['uuid']}   version: {result['version']}")
+    print()
+    print("  Upload it at https://extensions.gnome.org/upload/ .")
+    print("  Bump `version` in gnome-extension/*/metadata.json before each resubmission;")
+    print("  the store rejects a version it has already seen.")
+
+
+def cmd_install_service(args):
+    """Install the systemd user unit that starts the server at login."""
+    from vt import service
+
+    result = service.install(
+        port=args.port,
+        tunnel_name=args.tunnel_name,
+        host=args.host,
+        start=not args.no_start,
+    )
+    if not result["ok"]:
+        print(f"✗ {result['message']}")
+        sys.exit(1)
+
+    print(f"✓ {result['message']}")
+    print(f"  Unit: {result['path']}")
+    if result["started"]:
+        print("✓ Running now, and at every login from here on")
+    elif result["start_error"]:
+        print(f"⚠ Enabled, but it would not start now: {result['start_error']}")
+    else:
+        print("  Enabled; it starts with your next desktop session")
+
+    if not result["session_target"]:
+        # Installed cleanly and will never run: worth saying now rather than
+        # after a reboot that quietly changed nothing.
+        print(f"⚠ This desktop does not reach {service.SESSION_TARGET}, which the unit")
+        print("  hangs off. Start it by hand with: systemctl --user start gnomespeak")
+
+    print()
+    print("  A service prints its banner where nobody reads it, so the startup")
+    print("  token is not a way in: this unit requires pairing. Get a code with")
+    print("  `vt pair`, then open the link on the phone.")
+    print("  Logs: journalctl --user -u gnomespeak -f")
+    print()
+
+
+def cmd_uninstall_service(args):
+    """Remove the systemd user unit."""
+    from vt import service
+
+    result = service.uninstall()
+    print(("✓ " if result["ok"] else "✗ ") + result["message"])
+    if not result["ok"]:
+        sys.exit(1)
+
+
+def _version_line() -> str:
+    """`vt --version`: this build, and the extension source beside it."""
+    from vt import __version__
+
+    line = f"vt {__version__}"
+    source = package.source_dir()
+    shipped = package.metadata_version(source)
+    if shipped:
+        line += f" (GNOME extension version {shipped})"
+    return line
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="vt",
         description="Control your Linux PC from your phone.",
+    )
+    # The GNOME extension only reloads at login, so "which version is this?"
+    # is a question with two answers on one machine. Both are printed here,
+    # because a bug report with only the first cannot be acted on.
+    parser.add_argument(
+        "--version", action="version", version=_version_line(),
+        help="Print the version of vt and of the extension it would install",
     )
     subparsers = parser.add_subparsers(dest="command", help="Subcommands")
 
@@ -822,6 +1075,11 @@ def main():
     serve_parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
     serve_parser.add_argument("--no-token", action="store_true", help="Disable token auth")
     serve_parser.add_argument("--open", action="store_true", help="Open in browser")
+    serve_parser.add_argument(
+        "--tls", action="store_true",
+        help=("Serve HTTPS on the LAN with this PC's own certificate. The phone warns "
+              "once; the fingerprint to check is printed at startup."),
+    )
     serve_parser.add_argument(
         "--tunnel", action="store_true",
         help="Run a Cloudflare quick tunnel and print a pairing QR for the public URL",
@@ -856,6 +1114,14 @@ def main():
     pair_parser.add_argument("--port", type=int, default=8765, help="Port for the LAN fallback URL")
     pair_parser.add_argument("--minutes", type=int, default=10, help="Code lifetime (default: 10)")
     pair_parser.add_argument("--label", help="Note stored with the code")
+    pair_parser.add_argument(
+        "--guest", action="store_true",
+        help="Media only: no power, input, files, clipboard or pairing",
+    )
+    pair_parser.add_argument(
+        "--hours", type=float, default=0,
+        help="Access ends this many hours after pairing (default: until revoked)",
+    )
     pair_parser.add_argument(
         "--no-check", action="store_true",
         help="Skip the reachability check on the saved tunnel URL",
@@ -898,6 +1164,44 @@ def main():
         help="Do nothing when the install is already healthy (used by `make dev`)",
     )
 
+    open_parser = subparsers.add_parser("open", help="Open a link in this PC's browser")
+    open_parser.add_argument("url", help="An http:// or https:// link")
+
+    wake_parser = subparsers.add_parser("wake", help="Wake another machine (wake-on-LAN)")
+    wake_parser.add_argument("mac", help="The other machine's MAC address")
+    wake_parser.add_argument(
+        "--broadcast", default="255.255.255.255", help="Broadcast address to send to",
+    )
+    wake_parser.add_argument("--port", type=int, default=9, help="UDP port (default: 9)")
+
+    # package-extension
+    from vt import shell
+
+    pkg_parser = subparsers.add_parser(
+        "package-extension",
+        help="Build the extensions.gnome.org zip from the extension in this checkout",
+    )
+    pkg_parser.add_argument(
+        "--uuid", default=shell.STORE_EXTENSION_UUID,
+        help=f"uuid to publish under (default: {shell.STORE_EXTENSION_UUID})",
+    )
+    pkg_parser.add_argument("--out", default="", help="Directory to write the zip into (default: .)")
+
+    # install-service / uninstall-service
+    svc_parser = subparsers.add_parser(
+        "install-service", help="Start the server with your desktop session (systemd user unit)"
+    )
+    svc_parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
+    svc_parser.add_argument("--host", default="", help="Bind address (default: the server's own choice)")
+    svc_parser.add_argument(
+        "--tunnel-name", default="",
+        help="Run a named Cloudflare tunnel, so the URL survives a restart",
+    )
+    svc_parser.add_argument(
+        "--no-start", action="store_true", help="Install and enable it, but do not start it now"
+    )
+    subparsers.add_parser("uninstall-service", help="Remove the systemd user unit")
+
     args = parser.parse_args()
 
     # Dispatch
@@ -912,7 +1216,12 @@ def main():
         "devices": cmd_devices,
         "audit": cmd_audit,
         "allow-autoplay": cmd_allow_autoplay,
+        "open": cmd_open,
+        "wake": cmd_wake,
         "install-extension": cmd_install_extension,
+        "package-extension": cmd_package_extension,
+        "install-service": cmd_install_service,
+        "uninstall-service": cmd_uninstall_service,
     }
 
     if not args.command:

@@ -1,4 +1,4 @@
-# VoiceTalk v3: Pending Work
+# GnomeSpeak v3.4.0: Status & Pending Work
 
 ## Current State
 
@@ -12,17 +12,37 @@
 - ✅ **Security headers** — CSP, HSTS, X-Frame-Options, nosniff
 - ✅ **Rate limiting** — auth and pairing attempts rate-limited
 - ✅ **Audit log** — every action and rejection recorded
-- ✅ **Full test coverage** — 287 tests, all passing
+- ✅ **Full test coverage** — 854 tests, all passing
 - ✅ **Night light toggle** — `system:display` gets a night-light action via `gsettings`, alongside brightness
 - ✅ **Keep-awake toggle** — `system:power` can inhibit the idle screensaver via `org.gnome.SessionManager`, for casting a long video without the screen locking
 - ✅ **Dark/light theme toggle** — `system:display` flips `org.gnome.desktop.interface color-scheme`
 - ✅ **Microphone control** — `system:mic` mirrors `system:audio`'s volume slider and mute, for the default input node
-- ✅ **Wi-Fi radio toggle** — `system:wifi` flips `WirelessEnabled` via NetworkManager (`vt/sources/network.py`), radio on/off only, no network picking
+- ✅ **Wi-Fi radio toggle & saved networks** — `system:wifi` flips `WirelessEnabled` and switches to saved networks via NetworkManager (`vt/sources/network.py`)
 - ✅ **Touchpad, typing and presentation remote** — pointer, scroll, click, literal text and key chords through the GNOME extension (`vt/sources/remote_input.py`, `/api/input`); works under Wayland, where only the compositor may synthesize input
-- ✅ **Clipboard sync** — read and set the PC clipboard from the phone (`vt/sources/clipboard.py`, `/api/clipboard`) via wl-clipboard, xclip or xsel
-- ✅ **Notification mirroring** — desktop notifications streamed to the phone, read-only, by reading `dbus-monitor` (`vt/sources/notifications_mirror.py`, `/api/notifications`)
-- ✅ **File transfer** — phone → `~/Downloads/GnomeSpeak` and back, with open-on-PC (`vt/sources/transfer.py`, `/api/upload`, `/api/files`)
-- ✅ **Extension identity in one place** — bus name, object path, uuid and expected method set live in `vt/shell.py`; `vt doctor` introspects the live extension and names the features a stale build is missing
+- ✅ **Clipboard sync & history** — read and set the PC clipboard from the phone (`vt/sources/clipboard.py`, `/api/clipboard`), plus in-memory recent history (`vt/sources/clipboard_history.py`, `/api/clipboard/history`)
+- ✅ **Notification mirroring, dismiss & mute** — desktop notifications streamed over WebSocket, dismissable via D-Bus reply IDs, and mutable per-application (`vt/sources/notifications_mirror.py`, `/api/notifications`)
+- ✅ **Web Push notifications** — reach phone even when page/browser is closed via RFC 8291 payload encryption & RFC 8292 VAPID auth (`vt/push.py`, `/api/push/*`)
+- ✅ **File transfer & wallpaper** — phone → `~/Downloads/GnomeSpeak` and back, open on PC, and one-tap set picture as desktop wallpaper (`vt/sources/transfer.py`, `vt/sources/wallpaper.py`)
+- ✅ **Live channel (WebSocket)** — sub-300ms state updates with diff patches, single-use ticket auth (`POST /api/ws-ticket`), reconnect backoff, and poll fallback (`vt/live.py`, `GET /ws`)
+- ✅ **Starts with desktop session** — systemd user service bound to `graphical-session.target` (`vt/service.py`, `vt install-service`)
+- ✅ **Installable web app (PWA) & share target** — manifest, service worker offline fallback, home screen quick actions, and Android share sheet receiver (`vt/ui/manifest.webmanifest`, `vt/ui/sw.js`)
+- ✅ **Screenshot on demand** — still frame capture via `org.freedesktop.portal.Screenshot`, deleted from disk once served (`vt/sources/screenshot.py`, `/api/screenshot`)
+- ✅ **Now Playing album art & smooth scrubber** — album art caching/validation and local time interpolation for media players (`vt/sources/art.py`, `/api/art`)
+- ✅ **Per-app volume mixer & device selection** — individual PipeWire stream volume/mute, plus audio sink and source output device switching (`vt/sources/audio.py`, `audio:sink`, `audio:source`)
+- ✅ **Ring the PC & phone battery reporting** — find-my-PC alarm sound with stop control, phone battery sync to PC, and bi-directional low-battery alerts (`vt/sources/ring.py`, `vt/notify.py`)
+- ✅ **Hardware system monitor** — CPU, memory, disk, thermal sensors, and uptime cached and rounded to avoid poll noise (`vt/sources/monitor.py`, `system:machine`)
+- ✅ **Context-aware per-app keypads** — dedicated shortcut pads for focused app (VLC, mpv, Firefox, terminal, etc.) (`vt/sources/keypads.py`)
+- ✅ **Removable drive management** — detect USB/external drives and safe unmount/eject via udisks2 (`vt/sources/disks.py`)
+- ✅ **Sleep timers & schedule** — scheduled delay actions ("suspend in 30 min") tracked in memory (`vt/schedule.py`)
+- ✅ **Command macros** — multi-step target/action sequences with wait intervals in `commands.toml` (`vt/commands.py`)
+- ✅ **Guest pairing & scopes** — scoped permissions (media-only) and expiring credentials (`vt pair --guest --hours N`)
+- ✅ **LAN HTTPS / TLS** — opt-in self-signed TLS certificate generation with SHA-256 fingerprint (`vt serve --tls`, `vt/tls.py`)
+- ✅ **Multi-PC switcher & probe** — manage multiple saved machines in UI with PC-side reachability check (`POST /api/probe`)
+- ✅ **Wake-on-LAN** — send magic packets from PC to wake other machines on LAN (`vt/sources/wake.py`, `POST /api/wake`, `vt wake`)
+- ✅ **Diagnostics & audit on phone** — `vt doctor` on phone (`GET /api/diagnostics`) and security audit log viewer (`GET /api/audit`)
+- ✅ **Voice dictation** — Web Speech API on phone typing directly into focused window on PC
+- ✅ **COSMIC desktop parity** — Wayland foreign toplevel window control and virtual keyboard keystroke injection (`vt/sources/cosmic_windows.py`, `vt/sources/cosmic_input.py`)
+- ✅ **Extension identity & packaging** — bus name in `vt/shell.py`, wheel data distribution, and review-ready packaging (`vt/package.py`, `vt package-extension`)
 
 ## Known Limitations (By Design)
 
@@ -65,6 +85,9 @@
 
 ## Unimplemented Features
 
+Roadmap 4.0 status, task by task, lives in [ROADMAP.md](ROADMAP.md).
+
+
 ### Fixed in this round
 
 - **`vt doctor` always said the extension was missing** — the rename to
@@ -100,13 +123,28 @@
   interpreter -- the phone sends characters, vt does not read them.)
 - **Multi-step workflows** — "search for X, then play the second result" (would need state machine)
 
-### Still Missing (see FEATURE_PARITY.md)
-- **Screen mirroring / screenshots** — needs the portal or PipeWire screencast;
-  scrot and ImageMagick are X11-only
-- **Find-my-phone / ring** — needs a persistent phone-side connection
-  (WebSocket), not the 1 Hz poll the UI is built on
-- **Phone battery on the PC** — same reverse channel
-- **Per-app volume mixer** — wpctl can do it; the snapshot has no per-app node model yet
+### Shipped since (roadmap 4.0, P0-P2)
+- **Screenshot on demand** — `org.freedesktop.portal.Screenshot`; GNOME 50
+  refuses `org.gnome.Shell.Screenshot` outright ("Screenshot is not allowed")
+- **Ring this PC, and stopping it** — the live WebSocket channel replaced the
+  1 Hz poll, so the phone has the reverse channel this needed. The ring runs on
+  its own thread and stops on request, or after a minute if nobody asks
+- **Phone battery on the PC** — reported over the same channel, and it appears
+  as a target beside the PC's own
+- **Per-app volume mixer** — `wpctl status` stream parsing, one target per
+  PipeWire stream
+
+### Still Missing
+- **Notification actions other than dismiss** — activating an app's default
+  action means listening for `ActionInvoked` from the notification daemon's own
+  bus name, and vt is not the daemon. Dismiss works because `CloseNotification`
+  is a method any client may call
+- **Screen streaming** — a screenshot is one portal call; a stream is a
+  PipeWire negotiation, an encoder and a player, and the roadmap ranks it below
+  everything above
+- **The extension on extensions.gnome.org** — `vt package-extension` builds the
+  archive and validates the metadata the review tooling checks, but the listing
+  itself is a submission and a review queue, not code
 
 ## Known Issues (Won't Fix / By Design)
 
@@ -119,7 +157,7 @@
 
 ## Testing Checklist
 
-- [x] 270 unit tests passing
+- [x] 854 unit tests passing
 - [x] YouTube search via module backend (venv)
 - [x] YouTube search via CLI backend (system Python with yt-dlp on PATH)
 - [x] YouTube search error messages (missing yt-dlp, network timeout, etc.)
@@ -170,10 +208,10 @@ pip install qrcode[pil]
 
 ## Stable Release Readiness
 
-**Current:** `v3.1.0` on PyPI — design frozen  
+**Current:** `v3.4.0` — release ready  
 **Blockers:** None — all known issues are documented limitations or by-design trade-offs  
-**Test status:** 287 tests, all passing  
-**CI/CD:** GitHub Actions, Python 3.11–3.13, with and without optional deps
+**Test status:** 854 tests, all passing  
+**CI/CD:** GitHub Actions, Python 3.11–3.14, with and without optional deps
 
 The v2 tree (`client/`, `server/`, its OpenSpec specs, and the v2 root test
 scripts) was removed in the release commit; it remains recoverable in git

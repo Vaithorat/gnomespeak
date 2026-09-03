@@ -4,6 +4,7 @@ import re
 from typing import Any, Optional
 from vt.actions import ACCESS_DENIED, dbus_denied_message, dbus_error_name
 from vt.model import Target, Action
+from vt.sources.art import key_for as art_key
 
 try:
     import dbus
@@ -166,6 +167,7 @@ def get_mpris_targets() -> list[Target]:
             position_sec = float(position_us) / 1e6
             length_sec = float(length_us) / 1e6
 
+            art_url = str(metadata.get("mpris:artUrl") or "")
             title = str(metadata.get("xesam:title") or "Unknown")
             artist = _first_artist(metadata)
             url = str(metadata.get("xesam:url") or "")
@@ -216,6 +218,7 @@ def get_mpris_targets() -> list[Target]:
                     position=position_sec if length_sec > 0 else None,
                     length=length_sec if length_sec > 0 else None,
                     note=SEEK_UNAVAILABLE_REASON if seek_unavailable else "",
+                    art=art_key(art_url),
                     actions=actions,
                 )
             )

@@ -5,31 +5,38 @@
 [![Python](https://img.shields.io/pypi/pyversions/gnomespeak)](https://pypi.org/project/gnomespeak/)
 [![License: MIT](https://img.shields.io/github/license/Vaithorat/gnomespeak)](LICENSE)
 
-Control your Linux PC from your phone via a simple web interface. See what's playing, what's open, what apps are running — and control it all with a dropdown of concrete actions. No app installs, no voice, no AI guessing. Just you, your PC state, and pre-configured commands.
+**The remote for your Linux desktop that needs nothing installed on the phone and works from outside the house — because it sends state, not screens.**
+
+Open a URL in any phone browser and you get a live model of what the PC is doing: what is playing, what is open, what apps are running, what the volume and battery are — each one a target with concrete actions, one tap each. Kilobytes per update rather than megabits, so it still works on mobile data in a lift. No app to install, no voice, no AI guessing.
 
 ## Features
 
-- **Real-time state display** — See MPRIS players, open windows, individual Firefox tabs, workspaces, running apps, streaming shortcuts, Bluetooth and system state.
-- **Launch installed apps** — Search everything with a `.desktop` entry and start it from the phone, whether or not it is already running.
-- **YouTube search & play** — Search YouTube videos, see results with title, channel and duration, and tap to play in your browser. The video **starts on its own** and shows up under Players — vt checks the browser's autoplay policy and can fix it from the phone if it would block playback.
-- **YouTube playback control** — When a YouTube video plays in your browser, control it from the phone: play/pause, 10s seek, volume, mute, **fullscreen** and close tab. Delivered through the GNOME extension, so it works under Wayland; `xdotool`/`wmctrl` are only a fallback for non-GNOME X11 sessions.
-- **Up next** — Tap "Up next" on the YouTube screen to get what to watch after the video that is already playing, without typing a search for it.
-- **Window and workspace control** — Focus, minimize, maximize, move a window to another workspace, and switch workspaces from the phone.
-- **Touchpad and keyboard** — The phone is a trackpad: drag to move the pointer, tap to click, two fingers to scroll, two-finger tap to right-click. Type into whatever has focus, send key chords, and drive a slide deck with a Prev/Next/F5/Escape row. Delivered through the GNOME extension, so it works under Wayland.
-- **Clipboard sync** — Read the PC's clipboard on the phone, or push text the other way. Backed by `wl-clipboard` on Wayland and `xclip`/`xsel` on X11.
-- **Notification mirroring** — Desktop notifications appear on the phone as they arrive, read-only, so a PC across the room stops being something you have to walk to.
-- **File transfer** — Send a photo or a document from the phone to `~/Downloads/GnomeSpeak`, open it on the PC with one tap, or pull a file back down to the phone.
-- **Streaming shortcuts** — One tap for Netflix, Spotify, Prime Video, Disney+, JioHotstar, Twitch, Max and YouTube. Opens the desktop app when one is installed, the browser otherwise. Add your own (a Jellyfin box, say) in `~/.config/gnomespeak/streaming.toml`.
-- **Steam games** — Installed games are read from Steam's own library manifests and appear in the app search, ready to launch.
-- **Bluetooth** — Turn the radio on and off, and connect or disconnect paired devices.
-- **System control** — Lock, suspend, restart, shut down, screen brightness, do-not-disturb, and battery status at a glance.
-- **Capability-aware controls** — The phone shows only the actions each player/window/app actually supports (play/pause, next/prev, seek, focus, close, mute, volume).
-- **Pre-configured commands** — Define shell commands in TOML once, invoke them from the phone by name. No arbitrary text input.
-- **Cloudflare Tunnel** — `make dev` starts a quick tunnel by default, giving you a `*.trycloudflare.com` URL accessible from anywhere. No port forwarding, no router config, no Cloudflare account needed.
-- **Device pairing** — off-network callers must present a paired-device credential; the startup token is only accepted on the LAN. Pair a phone with `vt pair` or the QR code printed at startup.
-- **Web UI, no app install** — Open `http://<pc-ip>:8765` in any phone browser. No APK, no build step, bookmarkable.
-- **Token auth** — Printed on startup, hidden from history. Works on trusted LANs.
-- **Linux-native** — MPRIS over D-Bus, PipeWire volume, psutil app detection, systemd services. Built for GNOME/Wayland.
+- **Live channel over WebSocket** — Sub-300ms state updates (`GET /ws`) with JSON diff patches. Transmits only changed targets; an idle PC uses virtually zero network traffic. Falls back automatically to 1 Hz HTTP polling.
+- **Starts with the desktop session** — `vt install-service` installs a systemd *user* service bound to `graphical-session.target`. Starts automatically on login, uninstalls cleanly with `vt uninstall-service`.
+- **Installable web app (PWA) & share target** — Add to home screen from Chrome on Android for a fullscreen standalone app with quick actions. Share photos or links directly from Android's share sheet to your PC.
+- **Web Push notifications** — Receive notifications on your phone even when the browser tab is closed via RFC 8291 payload encryption and RFC 8292 VAPID auth (`pip install gnomespeak[push]`).
+- **Real-time state display** — See MPRIS players with album art and live position scrubbers, open windows, individual Firefox tabs, workspaces, running apps, streaming shortcuts, Bluetooth devices, and system status.
+- **Per-app volume & device switching** — Control individual application stream volumes and mute independently via PipeWire (`wpctl`). Switch audio output (sinks) and input (sources) between headphones, speakers, and mics.
+- **Touchpad and keyboard** — The phone is a trackpad: drag to move pointer, tap to click, two-finger scroll, two-finger tap for right-click. Type into whatever has focus, send key chords, or drive slide decks with a Prev/Next/F5/Escape presentation row. Works under Wayland via the compositor extension.
+- **Context-aware keypads** — Dedicated shortcut pads automatically tailored for the currently focused app (VLC, mpv, Firefox, terminal, etc.).
+- **Hardware system monitor** — Glanceable CPU, memory, disk usage, thermal sensor temperatures, and system uptime (`system:machine`).
+- **Screenshot on demand** — Capture a still frame of your desktop on demand via `org.freedesktop.portal.Screenshot`, viewed securely and removed immediately from disk.
+- **Ring this PC & battery sync** — Trigger an audible alarm and notification to find a misplaced laptop across the room, with on-screen stop control. Synchronizes phone battery level to the PC with low-battery alerts in both directions.
+- **Removable drives** — Detect mounted USB/external drives, view storage usage, and safely unmount and power them off via udisks2.
+- **Sleep timers & schedule** — Schedule delays to suspend, lock, or pause media ("suspend in 30 minutes") directly from the phone.
+- **Command macros** — Define multi-step sequences in `commands.toml` with optional delays between steps (e.g. Movie Mode: night light on, DND on, set volume).
+- **Clipboard sync & history** — Read and write the PC clipboard (`wl-clipboard` on Wayland, `xclip`/`xsel` on X11), with in-memory recent clipboard history.
+- **Open links & set wallpaper** — Open any link sent from your phone in the PC browser with one tap. Set any transferred image as your desktop background (light and dark themes).
+- **Launch installed apps & Steam games** — Search and launch any desktop app (`.desktop` entry) or installed Steam game.
+- **YouTube search, playback & Up Next** — Search YouTube, tap to play in browser with autoplay policy detection and fix, control playback (play/pause, seek, volume, fullscreen, close tab), and view related "Up next" videos.
+- **Window and workspace control** — Focus, minimize, maximize, move windows across workspaces, and switch workspaces (GNOME Shell extension or COSMIC Wayland protocols).
+- **Notification mirroring, dismiss & mute** — Mirror desktop notifications to the phone, dismiss them remotely, or mute notifications from noisy apps for the session.
+- **Guest pairing & scopes** — Pair devices with restricted permissions (e.g. `--guest` for media controls only) and auto-expiring access (`--hours N`).
+- **LAN HTTPS / TLS** — Encrypt local Wi-Fi traffic with self-signed TLS certificates (`vt serve --tls`). Off-LAN traffic is encrypted by Cloudflare Tunnel.
+- **Multi-PC switcher** — Manage multiple PCs from one web UI with PC-side reachability probes (`POST /api/probe`) and Wake-on-LAN packet sending.
+- **On-phone diagnostics** — View `vt doctor` preflight checks directly from the phone (`GET /api/diagnostics`), along with security audit logs (`GET /api/audit`).
+- **Voice dictation** — Dictate text on your phone's microphone using Web Speech API to type directly into the focused window on your PC.
+- **No phone app required** — Built purely on web standards. Works in any browser. Responsive, lightweight, and bandwidth-efficient.
 
 ## Installation
 
@@ -68,7 +75,7 @@ just with fewer features, each of which says so in `vt doctor` and on the phone.
    vt doctor
    ```
 
-   All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run VoiceTalk.
+   All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run GnomeSpeak.
 
 2. **Log out and back in**
 
@@ -163,17 +170,23 @@ For development or to work on the code:
 | Command | Purpose |
 |---------|---------|
 | `vt serve [--host IP] [--port 8765] [--no-token] [--open] [--tunnel]` | Start the HTTP server. Default: LAN IP with Cloudflare tunnel. `--tunnel` enables a quick tunnel for global access. `--no-token` disables token auth. `--open` opens in browser. |
-| `vt pair [--url URL] [--port PORT] [--minutes N]` | Issue a one-time pairing code for a new device. Prints a link and QR code. |
+| `vt pair [--url URL] [--port PORT] [--minutes N] [--guest] [--hours N]` | Issue a one-time pairing code for a new device. Prints a link and QR code. `--guest` limits the phone to media (no power, input, files, clipboard or pairing); `--hours` makes its access end by itself. |
 | `vt devices [--revoke ID] [--revoke-all]` | List paired devices or revoke access. |
 | `vt audit [-n N] [--rejects]` | Show recent security log entries. |
 | `vt status` | Print the current state as a terminal table (no web server). |
 | `vt do <target-id> <action-id> [value]` | Invoke an action from the CLI. For testing. |
-| `vt commands` | List configured commands. |
+| `vt commands` | List configured commands, including macros. |
 | `vt apps [query]` | List installed apps you can launch, optionally filtered (`vt apps browser`). Launch one with `vt do launcher:<id> launch`. |
 | YouTube Search | Find and play YouTube videos from the phone UI (with `yt-dlp` installed) |
 | `vt allow-autoplay [--status] [--revert] [--restart]` | Let the browser start videos opened from the phone. Writes `media.autoplay.default` into the Firefox profile's `user.js` — the same setting as Settings → Privacy & Security → Autoplay → Allow Audio and Video. Takes effect on the next Firefox start; `--restart` does that for you. |
+| `vt serve --tls` | Serve HTTPS on the LAN with a certificate this PC makes for itself. The phone warns once; the fingerprint to check is printed at startup. Off-LAN traffic already rides the tunnel's TLS. Needs `pip install gnomespeak[push]` (same extra). |
+| `vt open <url>` | Open an http(s) link in this PC's browser. The same path the phone uses. |
+| `vt wake <mac> [--broadcast ADDR] [--port N]` | Send a wake-on-LAN packet to another machine. Nothing acknowledges one, so it reports "sent", never "woken". |
 | `vt doctor` | Run preflight checks. |
 | `vt install-extension` | Install the GNOME Shell extension (windows, workspaces, pointer, typing). Cleans up a pre-rename `voicetalk@local` install and enables the new one for the next login. |
+| `vt package-extension [--uuid UUID] [--out DIR]` | Build the zip to upload to [extensions.gnome.org](https://extensions.gnome.org/upload/). The archive carries the store uuid (`gnomespeak@vaithorat.github.io`) while the checkout keeps `gnomespeak@local`; both are recognised by `vt doctor` and by the server. Bump `version` in `gnome-extension/*/metadata.json` before each resubmission. |
+| `vt install-service [--port N] [--tunnel-name NAME] [--no-start]` | Start the server with your desktop session, as a systemd *user* unit. Requires pairing (a service's banner reaches nobody), so get in with `vt pair`. Logs: `journalctl --user -u gnomespeak -f`. |
+| `vt uninstall-service` | Stop, disable and remove that unit. |
 
 ## HTTP API
 
@@ -207,6 +220,9 @@ GET /api/apps[?q=search+terms]
 GET /api/youtube[?q=search+terms]
   → {"results": [...], "error": ""}
 
+GET /api/youtube/related
+  → {"results": [...], "error": ""}
+
 POST /api/do
   ← {"target": "kind:id", "action": "action-id", "value": float?}
   → {"ok": bool, "message": "..."}
@@ -227,18 +243,80 @@ POST /api/input
   → {ok, message}
 
 GET  /api/notifications?since=<seq>
-  → {ok, entries: [{seq, ts, app, icon, summary, body}], error, running}
+  → {ok, entries: [{seq, ts, app, icon, summary, body, id}], error, running}
+
+POST /api/notifications/dismiss
+  ← {id}                                       the id from an entry above
+  → {ok, message}
+
+GET  /api/screenshot
+  → image/png, taken now and deleted from disk once served
+    403 {ok:false, message} when the portal prompt was declined
+
+GET  /api/art?k=<key>
+  → image/png|jpeg, the album art a player published (key comes from a target)
+
+GET  /api/audit[?count=60]
+  → {entries: [...]}   the security log, newest last
+
+POST /api/ws-ticket
+  → {ok, ticket, expires_in}                   single-use, seconds to live
+
+GET  /ws?ticket=<ticket>
+  → a live channel. Server sends {type:"state"|"patch"}; the phone may send
+    {type:"input"|"battery"|"ring"|"ring_stop"|"resync"|"ping"}.
+    Notifications are pushed as {type:"notification", entries:[...]} once the
+    mirror is running (the notifications screen starts it).
+
+POST /api/open                 ← {url} → {ok, message}
+  Opens an http(s) link in the PC's browser. Anything else is refused.
+
+GET  /api/clipboard/history    → {entries: [{seq, ts, text, truncated, length}]}
+DELETE /api/clipboard/history  → {ok, cleared}
+  The last few clips, in memory on the PC only.
+
+GET  /api/diagnostics          → {checks: [{id, title, state, detail, fix, lost}], summary}
+  `vt doctor` for the phone.
+
+POST /api/files/wallpaper      ← {name} → {ok, message}
+  Uses a transferred picture as the desktop background.
+
+GET  /api/push/key             → {ok, available, key, subscribed}
+POST /api/push/subscribe       ← {subscription} → {ok, message}
+POST /api/push/unsubscribe     ← {endpoint?} → {ok, removed}
+  Web Push, so notifications and alerts arrive with the page closed. Needs
+  `pip install gnomespeak[push]` on the PC.
+
+POST /api/notifications/mute   ← {app, muted?} → {ok, muted: [...]}
+  Stops mirroring one app for this session; `muted: false` asks for it back.
+
+POST /api/wake                 ← {mac} → {ok, message}
+  Wake-on-LAN for another machine on the network.
+
+POST /api/probe                ← {urls: [...]} → {servers: [{url, reachable, checked}]}
+  Whether each saved PC answers, checked from this PC. A yes or no and nothing
+  else: no status code, no body. At most 10 origins, http(s) only.
 
 GET  /api/files                → {files: [{name, size, mtime}], dir}
 POST /api/upload               multipart, field name "file" → {ok, name, size}
 GET  /api/files/<name>         → the file itself
 POST /api/files/open           ← {name} → {ok, message}
+
+POST /share                    ← multipart form data from Android share sheet
+GET  /{sw.js|manifest.webmanifest|*.png} → PWA service worker, web manifest, and icons
 ```
 
 Remote input has an endpoint of its own rather than being an action: a trackpad
 has no target in the snapshot and sends about twenty deltas a second, so routing
 it through `/api/do` would mean a snapshot lookup and an audit line per pointer
 movement. Typing and key chords *are* audited; pointer motion is not.
+
+The live channel replaces the poll where a browser can hold a socket: the
+server pushes only the targets that changed, so a PC that is doing nothing
+sends nothing. `/api/state` keeps serving the whole snapshot, unchanged, for
+any client that never opens `/ws`. A WebSocket handshake cannot carry headers,
+so the credential is exchanged for a single-use ticket first — a device secret
+in a URL would outlive the session in proxy logs and browser history.
 
 Installed apps are deliberately not part of `/api/state`: there are hundreds of
 them and they change about once a week, so they would dwarf the state that
@@ -262,10 +340,23 @@ id      = "suspend"
 label   = "💤 Suspend"
 run     = ["systemctl", "suspend"]
 confirm = true              # Require double-tap
+
+# Or a macro: sequential target-and-action steps with optional waits
+[[command]]
+id    = "movie_mode"
+label = "🎬 Movie Mode"
+icon  = "🎬"
+steps = [
+  {target = "system:notifications", action = "dnd_on"},
+  {target = "system:display", action = "night_light_on"},
+  {wait = 0.5},
+  {target = "system:audio", action = "volume", value = 0.4},
+]
 ```
 
 **Rules:**
 - `run` is always a list of arguments (shell=False), never a string. This is the security boundary.
+- Alternatively, `steps` defines a sequence of target/action pairs (e.g. `{target = "system:audio", action = "volume", value = 0.4}`) or `{wait = seconds}`. Steps cannot name external binaries, keeping commands safe.
 - `id` must be unique and cannot collide with built-in actions.
 - If `confirm: true`, the phone requires a second tap ("Sure?") before executing.
 - Invalid entries are logged and skipped on startup.
@@ -274,28 +365,43 @@ confirm = true              # Require double-tap
 
 - **Targets** — Everything controllable (media players, windows, apps, system controls, commands) is a Target with a list of Actions.
 - **Sources** — Targets come from:
-  - **MPRIS** (`sources/mpris.py`) — Media players (Firefox, Chrome, VLC, Spotify, etc.)
-  - **Windows** (`sources/windows.py`) — Open windows via the GNOME Shell extension (optional), or, when that's absent, via `sources/cosmic_windows.py` talking COSMIC's own Wayland protocols directly (`pip install gnomespeak[wayland]`). Firefox windows expand into one target per tab on GNOME; the COSMIC backend has no tab-switching yet, so its Firefox windows stay unexpanded.
-  - **Firefox tabs** (`sources/firefox.py`) — Tabs are not windows: nothing in Mutter can see them, and the window manager only ever reports the active one. The tab list is read from Firefox's own session store (`sessionstore-backups/recovery.jsonlz4`), and switching is done by having the extension type Firefox's own Alt+1..9 shortcuts into the window.
-  - **Apps** (`sources/apps.py`) — Running apps matched against `.desktop` files, and every installed `.desktop` entry as a launchable target
-  - **Audio** (`sources/audio.py`) — System volume via `wpctl`
-  - **YouTube** (`sources/youtube.py`) — Search via `yt-dlp`, and opening a video in the browser. Before it opens one it asks `sources/browser_autoplay.py` whether the browser will actually start playing, so a tap that cannot succeed says why instead of reporting success.
-  - **Commands** (`commands.py`) — User-defined shell commands from TOML
-- **Actions** — Derived from player capabilities (CanPlay, CanPause, CanSeek, etc.) so unsupported actions don't appear.
-- **State refresh** — 1 Hz background task. The web UI polls instantly; the server caches.
+  - **MPRIS** (`sources/mpris.py`) — Media players (Firefox, Chrome, VLC, Spotify, etc.) with album art (`sources/art.py`) and live position tracking
+  - **Windows** (`sources/windows.py`) — Open windows via the GNOME Shell extension, or via `sources/cosmic_windows.py` talking COSMIC's Wayland protocols (`pip install gnomespeak[wayland]`)
+  - **Input injection** (`sources/remote_input.py`, `sources/cosmic_input.py`) — Wayland input synthesis via GNOME extension or COSMIC virtual keyboard protocols
+  - **Firefox tabs** (`sources/firefox.py`) — Tab list read directly from Firefox session store (`recovery.jsonlz4`), switched via keyboard shortcuts
+  - **Apps** (`sources/apps.py`) — Running apps matched to `.desktop` entries, plus installed launcher targets (`/api/apps`)
+  - **Audio** (`sources/audio.py`) — System volume, per-application stream mixers, and sink/source output switching via `wpctl` (PipeWire)
+  - **YouTube** (`sources/youtube.py`, `sources/youtube_player.py`) — Search via `yt-dlp`, related videos, autoplay verification (`sources/browser_autoplay.py`), and media key controls
+  - **Commands & Macros** (`commands.py`) — Shell commands (argv) and multi-step macros from TOML
+  - **Network** (`sources/network.py`) — Wi-Fi radio state and switching between saved NetworkManager connections
+  - **Clipboard** (`sources/clipboard.py`, `sources/clipboard_history.py`) — Bi-directional clipboard sync and in-memory history
+  - **Notifications** (`sources/notifications_mirror.py`, `push.py`) — Live D-Bus notification monitor with dismiss/mute, plus Web Push
+  - **Disks** (`sources/disks.py`) — Removable USB storage list, usage, and safe ejection via `udisksctl`
+  - **Keypads** (`sources/keypads.py`) — Context-aware keyboard shortcuts tailored to the active application
+  - **Monitor** (`sources/monitor.py`) — System performance (CPU, memory, disk, thermals, uptime) via `psutil`
+  - **Screenshot** (`sources/screenshot.py`) — On-demand portal still capture
+  - **Ring** (`sources/ring.py`, `notify.py`) — PC alarm sound and desktop notification banners
+  - **Open & Wallpaper** (`sources/open_url.py`, `sources/wallpaper.py`) — Open URL in browser and set background image
+  - **Wake-on-LAN** (`sources/wake.py`) — Broadcast magic packets across the local subnet
+- **Actions** — Derived from capabilities (CanPlay, CanPause, CanSeek, etc.) so unsupported actions don't appear.
+- **State refresh** — Live WebSocket channel pushes diff patches under 300ms (`vt/live.py`). 1 Hz background task caches snapshots for `/api/state` poll fallback. Concurrent subprocess collection (`vt/procs.py`) completes snapshots in ~75ms.
 
 ## Limitations
 
-- **Wayland** — Only the compositor may synthesize input, so keystrokes go through the GNOME extension's `SendKeys` (browser tab switching and YouTube playback keys). `xdotool` is silently ignored under Wayland and is only used as a fallback on non-GNOME X11 sessions.
+- **Wayland** — Only the compositor may synthesize input, so keystrokes go through the GNOME extension's `SendKeys` or COSMIC's `virtual-keyboard` protocol. `xdotool` is only used as a fallback on non-GNOME, non-COSMIC X11 sessions.
 - **Firefox tab list lags** — The session store is rewritten every `browser.sessionstore.interval` ms (15000 by default), so a newly opened tab can take that long to appear. Lower the pref in `about:config` for a snappier remote, at the cost of more disk writes.
 - **Firefox tabs past the ninth** — Firefox binds Alt+1..8 to tabs 1-8 and Alt+9 to the last tab. Tabs in between are reached by jumping to tab 8 and stepping forward with Ctrl+PageDown, which is correct but visibly walks the tab bar.
 - **MPRIS only** — Only players that register on D-Bus appear (Firefox, Chrome, VLC, mpv, Spotify). HTML5 `<video>` without a media session will not.
 - **Window extension** — Requires GNOME Shell 45+, needs a logout/login to activate, and may need a `metadata.json` update for GNOME 51+. **A Shell extension only reloads on log out**, so after updating vt you must log out and back in before window state, workspaces and the YouTube keys will work; `vt doctor` says so when it detects an older build still running.
-- **Window control on COSMIC** — works via `sources/cosmic_windows.py` (needs `pip install gnomespeak[wayland]`) instead of an extension, but only Focus/Close/Minimize/Maximize -- no workspaces, no Firefox tab-switching, and no YouTube playback keys (all three need the keystroke-injection route the GNOME extension provides, which this backend doesn't implement yet). On KDE or any other non-GNOME, non-COSMIC compositor, window control doesn't work at all yet.
+- **Window control on COSMIC** — Works via `sources/cosmic_windows.py` and `sources/cosmic_input.py` (`pip install gnomespeak[wayland]`) instead of an extension. Window focus, close, minimize, maximize, Firefox tab switching, and YouTube playback keys are supported. Workspace listing/switching on COSMIC is not yet implemented. On KDE or other non-GNOME compositors, window management is not yet supported.
 - **Bluetooth pairing** — Only devices already paired through the desktop's own dialog can be connected. Pairing a *new* device needs an agent to answer a PIN or confirmation prompt, and answering it from a phone that cannot see the number on the screen is how people pair the wrong device.
 - **Up next is approximate** — yt-dlp has never promised a related-videos field, so when one is absent vt searches for the current video's title instead. Similar, not identical to YouTube's own sidebar.
 - **Autoplay is a browser setting** — vt can read and set it for Firefox (`vt allow-autoplay`), but it only takes effect on the next Firefox start, and for Chromium-family browsers there is no equivalent switch from outside the process.
-- **Plain HTTP** — The token stops casual access on a trusted network; it is not TLS. The Cloudflare tunnel provides HTTPS end-to-end.
+- **Plain HTTP by default** — The token stops casual access on a trusted network; it is not TLS. Use `vt serve --tls` for local HTTPS encryption, or Cloudflare Tunnel for off-LAN HTTPS.
+- **Notifications cannot be acted on, only dismissed** — Dismissal is a method on the notification daemon, so any client may call it; *activating* an action means emitting `ActionInvoked` from the daemon's own bus name, and vt is not the daemon. A reply box that could never deliver would be worse than no button.
+- **Screenshots are stills, on request** — The portal prompts, one frame at a time, and nothing is retained on disk. Screen *streaming* stays out of scope: it costs megabits a second and stops working on mobile data.
+- **Phone battery needs the Battery Status API** — Chromium-family browsers still expose it; Firefox removed it, and there the PC simply shows no phone row.
+- **Live channel needs a WebSocket** — Where one cannot be held, the page falls back to the 1 Hz poll and keeps working.
 
 ## Troubleshooting
 
@@ -395,7 +501,7 @@ because the URL is not a credential off-network.
 - **Security headers** — CSP, HSTS, X-Frame-Options, nosniff on every response.
 - **Command validation** — Commands are defined in a TOML file on the PC; the
   phone can only name one, not supply arguments.
-- **No secrets stored** — V3 has no API keys, no SMTP credentials, no
+- **No secrets stored** — GnomeSpeak has no API keys, no SMTP credentials, no
   encryption at rest. Device secrets are SHA-256 hashed.
 
 ## Project Structure
@@ -403,40 +509,70 @@ because the URL is not a credential off-network.
 ```
 gnomespeak/
 ├── vt/
-│   ├── __init__.py
-│   ├── cli.py                  # CLI entry point
+│   ├── __init__.py             # Version (3.4.0)
+│   ├── cli.py                  # CLI entry point (serve, pair, devices, status, do, ...)
 │   ├── model.py                # Target/Action dataclasses
 │   ├── state.py                # Snapshot assembly
-│   ├── server.py               # aiohttp HTTP server
-│   ├── auth.py                 # Device pairing, credentials, rate limiting
+│   ├── server.py               # aiohttp HTTP server & REST routes
+│   ├── auth.py                 # Device pairing, credentials, rate limiting, scopes
+│   ├── live.py                 # Live WebSocket channel with diff patching
 │   ├── tunnel.py               # Cloudflare Tunnel integration
-│   ├── commands.py             # TOML commands loader
+│   ├── commands.py             # TOML commands & macros loader
+│   ├── notify.py               # Desktop notifications & battery alerts
+│   ├── procs.py                # Concurrent subprocess runner
+│   ├── push.py                 # Web Push encryption (RFC 8291) and auth (RFC 8292)
+│   ├── schedule.py             # Sleep timers & scheduled actions
+│   ├── service.py              # systemd user service management
+│   ├── shell.py                # GNOME Shell extension D-Bus client & lifecycle
+│   ├── diagnostics.py          # System preflight checks & phone diagnostics
+│   ├── tls.py                  # Self-signed LAN TLS certificate generation
+│   ├── package.py              # GNOME extension packager & validator
 │   ├── sources/
-│   │   ├── mpris.py            # MPRIS players
-│   │   ├── windows.py          # GNOME extension
-│   │   ├── firefox.py          # Tab list from the session store
-│   │   ├── apps.py             # Running and installed apps
-│   │   ├── audio.py            # PipeWire volume
-│   │   ├── youtube.py          # Search, and opening a video so it plays
-│   │   ├── youtube_player.py   # YouTube keys: extension first, xdotool fallback
-│   │   ├── browser_autoplay.py # Whether the browser will actually start it
+│   │   ├── mpris.py            # MPRIS players, controls & position
+│   │   ├── art.py              # Album art retrieval & caching
+│   │   ├── windows.py          # Window control dispatcher
+│   │   ├── cosmic_windows.py   # Wayland foreign toplevel window control (COSMIC)
+│   │   ├── cosmic_input.py     # Wayland virtual keyboard input injection (COSMIC)
+│   │   ├── firefox.py          # Firefox tab list from session store
+│   │   ├── apps.py             # Running and installed apps (.desktop)
+│   │   ├── audio.py            # PipeWire volume, per-stream mixers, sinks/sources
+│   │   ├── youtube.py          # Search, related videos, watch URLs
+│   │   ├── youtube_player.py   # YouTube playback controls
+│   │   ├── browser_autoplay.py # Browser autoplay policy detection & fix
 │   │   ├── workspaces.py       # Workspace list and switching
-│   │   ├── bluetooth.py        # BlueZ radio and paired devices
-│   │   ├── streaming.py        # Netflix/Spotify/... app-or-browser shortcuts
-│   │   ├── steam.py            # Installed games from Steam's manifests
-│   │   └── system.py           # Lock, suspend, brightness, DND, battery
+│   │   ├── bluetooth.py        # BlueZ radio, paired devices, battery levels
+│   │   ├── streaming.py        # Streaming app-or-browser shortcuts
+│   │   ├── steam.py            # Installed Steam games
+│   │   ├── system.py           # Lock, suspend, brightness, DND, battery, power
+│   │   ├── monitor.py          # CPU, memory, disk, thermals, uptime
+│   │   ├── disks.py            # Removable drives & safe eject via udisks2
+│   │   ├── keypads.py          # Context-aware per-app keypads
+│   │   ├── ring.py             # PC alarm sound & desktop banner
+│   │   ├── clipboard.py        # Clipboard read/write
+│   │   ├── clipboard_history.py# In-memory clipboard history
+│   │   ├── remote_input.py     # Touchpad, typing, and key chords
+│   │   ├── notifications_mirror.py # Desktop notifications monitor & dismiss/mute
+│   │   ├── open_url.py         # Open link in PC browser
+│   │   ├── wallpaper.py        # Set desktop wallpaper image
+│   │   ├── wake.py             # Wake-on-LAN magic packets
+│   │   └── transfer.py         # File transfer & downloads
 │   ├── ui/
-│   │   └── index.html          # Single-file web UI
+│   │   ├── index.html          # Single-file web remote UI
+│   │   ├── sw.js               # Service worker (offline fallback, Web Push, share)
+│   │   ├── manifest.webmanifest# PWA web manifest with app shortcuts
+│   │   └── *.png               # PWA icons (192, 512, maskable, apple-touch)
 ├── gnome-extension/gnomespeak@local/
-│   ├── metadata.json
-│   ├── extension.js            # D-Bus window, workspace and key interface
+│   ├── metadata.json           # Extension metadata (v4 / 3.4.0)
+│   ├── extension.js            # D-Bus window, workspace, pointer & key interface
 ├── Makefile                    # make dev / setup / test / doctor
 ├── scripts/envreport.py        # backs `make env`
-├── scripts/setup-system.sh     # system packages, by capability not package list
+├── scripts/setup-system.sh     # system packages by capability
 ├── pyproject.toml
 ├── commands.toml.example
 ├── README.md
-└── tests/                      # pytest suite (WIP)
+├── ARCHITECTURE.md
+├── CHANGELOG.md
+└── tests/                      # pytest suite (854 tests)
 ```
 
 ## Development

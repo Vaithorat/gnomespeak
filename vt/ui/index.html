@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0e1013">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <link rel="icon" href="/icon-192.png" type="image/png">
+    <meta name="mobile-web-app-capable" content="yes">
     <title>VoiceTalk</title>
     <style>
         * {
@@ -675,6 +679,17 @@
             margin: 4px auto 12px;
         }
 
+        .art img {
+            width: 100%;
+            aspect-ratio: 1 / 1;
+            object-fit: cover;
+            border-radius: 16px;
+            background-color: var(--surface-2);
+            display: block;
+        }
+
+        .art { margin-bottom: 14px; }
+
         .sheet-head { padding: 0 6px 12px; }
 
         .sheet-title {
@@ -1182,9 +1197,148 @@
             pollTimer = null;
         }
 
+        // === Live channel ===
+        // The poll fetched the whole snapshot once a second whether or not the
+        // PC had done anything, which on mobile data is the largest cost this
+        // page has and puts a one-second floor under every reaction. The socket
+        // carries only what changed. The poll stays as the fallback: a browser
+        // that cannot hold a socket, or a network that eats one, still works —
+        // it just works the old way.
+        let ws = null;
+        let wsSeq = -1;
+        let wsTargets = new Map();
+        let wsOrder = [];
+        let wsRetry = 0;
+        let wsTimer = null;
+        let wsWanted = false;
+
+        function liveOpen() {
+            return !!ws && ws.readyState === WebSocket.OPEN;
+        }
+
+        async function liveConnect() {
+            if (!wsWanted || ws) return;
+            // A WebSocket handshake carries no headers a page can set, so the
+            // credential is exchanged for a single-use ticket over a normal
+            // authenticated POST. The device secret never reaches a URL.
+            let ticket = "";
+            try {
+                const resp = await fetch(`${API_BASE}/ws-ticket`, {method: "POST", headers: getHeaders()});
+                if (resp.ok) ticket = (await resp.json()).ticket || "";
+            } catch (e) { ticket = ""; }
+            if (!ticket) { liveRetry(); return; }
+
+            const scheme = window.location.protocol === "https:" ? "wss://" : "ws://";
+            let sock;
+            try {
+                sock = new WebSocket(scheme + window.location.host + "/ws?ticket=" + encodeURIComponent(ticket));
+            } catch (e) { liveRetry(); return; }
+            ws = sock;
+            sock.onopen = () => { wsRetry = 0; reportBattery(); };
+            sock.onmessage = (event) => liveMessage(event.data);
+            sock.onerror = () => { try { sock.close(); } catch (e) {} };
+            sock.onclose = () => {
+                if (ws !== sock) return;
+                ws = null;
+                wsSeq = -1;
+                // Back to the poll immediately, so a dropped socket costs
+                // freshness rather than the page going quiet.
+                if (authState === "ok") startPolling();
+                liveRetry();
+            };
+        }
+
+        // The phone's own battery, on the PC's screen. Only Chromium-based
+        // browsers still expose it; where it is missing the PC simply shows no
+        // phone row, which is the truth rather than a zero.
+        let batterySource = null;
+
+        async function reportBattery() {
+            if (!liveOpen()) return;
+            try {
+                if (!batterySource && navigator.getBattery) {
+                    batterySource = await navigator.getBattery();
+                    batterySource.addEventListener("levelchange", reportBattery);
+                    batterySource.addEventListener("chargingchange", reportBattery);
+                }
+                if (!batterySource) return;
+                ws.send(JSON.stringify({
+                    type: "battery",
+                    level: batterySource.level,
+                    charging: batterySource.charging,
+                }));
+            } catch (e) { /* no battery API here */ }
+        }
+
+        function liveRetry() {
+            if (!wsWanted || wsTimer) return;
+            const delay = Math.min(15000, 1000 * Math.pow(2, wsRetry++));
+            wsTimer = setTimeout(() => { wsTimer = null; liveConnect(); }, delay);
+        }
+
+        function liveClose() {
+            wsWanted = false;
+            if (wsTimer) { clearTimeout(wsTimer); wsTimer = null; }
+            const sock = ws;
+            ws = null;
+            if (sock) { try { sock.close(); } catch (e) {} }
+        }
+
+        function liveMessage(raw) {
+            let msg;
+            try { msg = JSON.parse(raw); } catch (e) { return; }
+
+            if (msg.type === "state") {
+                wsSeq = msg.seq;
+                wsOrder = (msg.targets || []).map(t => t.id);
+                wsTargets = new Map((msg.targets || []).map(t => [t.id, t]));
+            } else if (msg.type === "patch") {
+                if (msg.base !== wsSeq) {
+                    // Cannot happen while the server is tracking us correctly,
+                    // and is cheap to survive if it ever does.
+                    try { ws.send(JSON.stringify({type: "resync"})); } catch (e) {}
+                    return;
+                }
+                for (const t of (msg.changed || [])) wsTargets.set(t.id, t);
+                for (const id of (msg.removed || [])) wsTargets.delete(id);
+                if (msg.order) wsOrder = msg.order;
+                wsSeq = msg.seq;
+            } else if (msg.type === "alert") {
+                // The PC saying something about itself. Rare, and worth the
+                // buzz: the screen it would otherwise appear on is the one the
+                // user walked away from.
+                buzz(12);
+                showNotice(msg.message || "The PC needs attention");
+                return;
+            } else if (msg.type === "notification") {
+                receiveNotifications(msg.entries || []);
+                return;
+            } else {
+                return;
+            }
+
+            // The socket is delivering, so the poll has nothing left to do.
+            stopPolling();
+            updateStatus(true);
+            clearError();
+            applyState({
+                targets: wsOrder.map(id => wsTargets.get(id)).filter(Boolean),
+                ts: msg.ts,
+            });
+        }
+
+        function startUpdates() {
+            // Poll first: it paints the page now, and it is what the socket
+            // falls back to. The socket takes over on its first message.
+            startPolling();
+            wsWanted = true;
+            liveConnect();
+        }
+
         function enterPairing() {
             authState = "pairing";
             stopPolling();
+            liveClose();
             if (!pairNameDraft) pairNameDraft = defaultDeviceName();
             clearError();
             renderPairing();
@@ -1229,7 +1383,29 @@
             authState = "ok";
             currentDeviceId = info.device_id || "";
             if (info.kind !== "device") await pairSelf();
-            startPolling();
+            openRequestedView();
+            startUpdates();
+        }
+
+        // The installed icon's long-press menu opens "/?go=input" and friends.
+        // Only the page's own screens are reachable this way, and the query is
+        // dropped from the URL afterwards so a reload lands on the home screen
+        // rather than reopening the same corner forever.
+        const DEEP_LINKS = {
+            input: "input:", clipboard: "clipboard:", notifs: "notifs:",
+            screen: "screen:", files: "files:", audit: "audit:", servers: "servers:list",
+            health: "health:list",
+        };
+
+        function openRequestedView() {
+            const url = new URL(window.location);
+            const wanted = url.searchParams.get("go");
+            if (!wanted) return;
+            url.searchParams.delete("go");
+            history.replaceState({}, "",
+                url.pathname + (url.searchParams.toString() ? "?" + url.searchParams : "") + url.hash);
+            const view = DEEP_LINKS[wanted];
+            if (view) navPush(view);
         }
 
         // === API ===
@@ -1517,6 +1693,12 @@
             if (o.confirm) attrs.push('data-confirm="1"');
             if (o.nav) attrs.push(`data-nav="${escapeAttr(o.nav)}"`);
             if (o.category) attrs.push(`data-category="${escapeAttr(o.category)}"`);
+            if (o.server) attrs.push(`data-server="${escapeAttr(o.server)}"`);
+            if (o.clip) attrs.push(`data-clip="${escapeAttr(String(o.clip))}"`);
+            // Long-press: a notification row already carries Dismiss, and a
+            // second button would leave neither of them a thumb's width.
+            if (o.mute) attrs.push(`data-mute="${escapeAttr(o.mute)}"`);
+            if (o.unmute) attrs.push(`data-unmute="${escapeAttr(o.unmute)}"`);
             if (o.tab) attrs.push(`data-tab="${escapeAttr(o.tab)}"`);
             if (o.sheet) attrs.push(`data-more="${escapeAttr(o.sheet)}"`);
             if (o.related) attrs.push('data-yt-related="1"');
@@ -1538,7 +1720,13 @@
                 html += `<span class="badge">${escapeHtml(String(o.badge))}</span>`;
             }
             if (o.meta) html += `<span class="row-meta">${escapeHtml(o.meta)}</span>`;
-            if (o.revoke) {
+            if (o.server) {
+                html += `<button class="revoke" data-server-remove="1">Forget</button>`;
+            } else if (o.dismiss) {
+                html += `<button class="revoke" data-dismiss="${escapeAttr(String(o.dismiss))}">Dismiss</button>`;
+            } else if (o.unmute) {
+                html += `<button class="revoke" data-unmute="${escapeAttr(o.unmute)}">Unmute</button>`;
+            } else if (o.revoke) {
                 html += `<button class="revoke" data-revoke="${escapeAttr(o.revoke)}">Revoke</button>`;
             } else if (o.more) {
                 html += `<button class="row-more" data-more="${escapeAttr(o.more)}" aria-label="More actions">⋯</button>`;
@@ -1556,6 +1744,7 @@
             if (o.confirm) attrs.push('data-confirm="1"');
             if (o.nav) attrs.push(`data-nav="${escapeAttr(o.nav)}"`);
             if (o.category) attrs.push(`data-category="${escapeAttr(o.category)}"`);
+            if (o.server) attrs.push(`data-server="${escapeAttr(o.server)}"`);
             if (o.tab) attrs.push(`data-tab="${escapeAttr(o.tab)}"`);
             let cls = "tile";
             if (o.on) cls += " on";
@@ -1631,7 +1820,15 @@
             if (authState === "pairing") return;
             const data = await fetchState();
             if (!data) return;
+            applyState(data);
+        }
+
+        // Shared by the poll and the live channel: both end up holding a
+        // snapshot, and everything downstream of one must not care which
+        // brought it.
+        function applyState(data) {
             state = data;
+            stateAt = Date.now();
 
             if (Date.now() < renderHoldUntil) return;
 
@@ -1662,10 +1859,15 @@
             return navStack.length > 0 && navStack[navStack.length - 1].startsWith("notifs:");
         }
 
+        function isClipboardView() {
+            return navStack.length > 0 && navStack[navStack.length - 1].startsWith("clipboard:");
+        }
+
         // Screens that own their own content and their own controls: a state
         // poll must never rebuild them, or the touchpad loses its listeners
         // mid-gesture and a half-typed clipboard message is thrown away.
-        const SELF_OWNED_VIEWS = ["input:", "clipboard:", "notifs:", "files:"];
+        const SELF_OWNED_VIEWS = ["input:", "clipboard:", "notifs:", "files:", "screen:",
+                                  "servers:", "audit:", "health:"];
 
         function selfOwnedView() {
             if (!navStack.length) return "";
@@ -1681,7 +1883,7 @@
                 ? state.targets.filter(t => kinds.indexOf(t.kind) !== -1)
                 : state.targets;
             return JSON.stringify(list.map(t => [
-                t.id, t.kind, t.title, t.subtitle, t.icon, t.status, t.note,
+                t.id, t.kind, t.title, t.subtitle, t.icon, t.status, t.note, t.art,
                 (t.actions || []).map(a => [a.id, a.label, a.kind, a.value]),
             ]));
         }
@@ -1756,10 +1958,14 @@
             if (type === "installed") return "Installed apps";
             if (type === "youtube") return "YouTube";
             if (type === "devices") return "Paired devices";
+            if (type === "servers") return "Other PCs";
+            if (type === "audit") return "Security log";
+            if (type === "health") return "What works";
             if (type === "input") return "Touchpad & keyboard";
             if (type === "clipboard") return "Clipboard";
             if (type === "notifs") return "Notifications";
             if (type === "files") return "Files";
+            if (type === "screen") return "Screenshot";
             if (type === "target") {
                 const t = findTarget(key);
                 return t ? t.title : "Details";
@@ -1813,6 +2019,12 @@
                     renderYoutube(content);
                 } else if (type === "devices") {
                     renderDevices(content);
+                } else if (type === "servers") {
+                    renderServers(content);
+                } else if (type === "audit") {
+                    renderAudit(content);
+                } else if (type === "health") {
+                    renderHealth(content);
                 } else if (type === "input") {
                     renderTouchpad(content);
                 } else if (type === "clipboard") {
@@ -1821,32 +2033,85 @@
                     renderNotifications(content);
                 } else if (type === "files") {
                     renderFiles(content);
+                } else if (type === "screen") {
+                    renderScreenshot(content);
                 }
             }
 
             restoreUI(snap);
             paintProgress();
+            paintArt();
+        }
+
+        // Album art is fetched with credentials and handed to the <img> as a
+        // blob: an <img src> cannot carry a header, and the credential must not
+        // go in a URL.
+        const artCache = new Map();
+
+        async function paintArt() {
+            const nodes = document.querySelectorAll("img[data-art]");
+            for (const node of nodes) {
+                const key = node.dataset.art;
+                if (!key || node.dataset.artLoaded === key) continue;
+                if (artCache.has(key)) {
+                    node.onerror = () => node.closest(".art")?.remove();
+                    node.src = artCache.get(key);
+                    node.dataset.artLoaded = key;
+                    continue;
+                }
+                try {
+                    const resp = await fetch(`${API_BASE}/art?k=${encodeURIComponent(key)}`, {headers: getHeaders()});
+                    if (!resp.ok) { node.closest(".art")?.remove(); continue; }
+                    const url = URL.createObjectURL(await resp.blob());
+                    artCache.set(key, url);
+                    // A picture that will not render must leave no trace: the
+                    // browser's broken-image placeholder says "this is wrong"
+                    // about a player that is playing perfectly well.
+                    node.onerror = () => node.closest(".art")?.remove();
+                    node.src = url;
+                    node.dataset.artLoaded = key;
+                } catch (e) {
+                    node.closest(".art")?.remove();
+                }
+            }
         }
 
         // Progress bars are written straight to the DOM every poll, so the bar
         // advances without the view being rebuilt under the user's thumb.
+        // Position between updates is arithmetic, not information: a playing
+        // track advances one second per second. Interpolating locally is what
+        // lets the bar move smoothly while the server sends one message per
+        // actual change.
+        let stateAt = 0;
+
+        function livePosition(target) {
+            if (target.position === null || target.position === undefined) return null;
+            if (target.status !== "playing" || !stateAt) return target.position;
+            const elapsed = (Date.now() - stateAt) / 1000;
+            return Math.min(target.length || Infinity, target.position + elapsed);
+        }
+
         function paintProgress() {
             document.querySelectorAll("[data-progress-for]").forEach(el => {
                 const target = findTarget(el.dataset.progressFor);
                 const fill = el.querySelector(".progress-fill");
                 const now = el.querySelector(".time-now");
                 const total = el.querySelector(".time-total");
-                if (!target || !target.length || target.position === null ||
-                    target.position === undefined) {
+                const position = target ? livePosition(target) : null;
+                if (!target || !target.length || position === null) {
                     if (fill) fill.style.width = "0%";
                     return;
                 }
-                const pct = Math.max(0, Math.min(100, (target.position / target.length) * 100));
+                const pct = Math.max(0, Math.min(100, (position / target.length) * 100));
                 if (fill) fill.style.width = pct.toFixed(1) + "%";
-                if (now) now.textContent = fmtTime(target.position);
+                if (now) now.textContent = fmtTime(position);
                 if (total) total.textContent = fmtTime(target.length);
             });
         }
+
+        setInterval(() => {
+            if (authState === "ok" && state) paintProgress();
+        }, 250);
 
         // --- players --------------------------------------------------------
 
@@ -1927,6 +2192,50 @@
 
         // --- home ------------------------------------------------------------
 
+        // === Pinned targets ===================================================
+        // Four things get used every evening and the rest almost never. Which
+        // four is a matter for the phone, not the PC, so the list lives here
+        // and travels with the browser that made it.
+        function pinnedIds() {
+            try {
+                const saved = JSON.parse(localStorage.getItem("vt_pins") || "[]");
+                return Array.isArray(saved) ? saved.filter(id => typeof id === "string") : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function isPinned(id) {
+            return pinnedIds().indexOf(id) !== -1;
+        }
+
+        function togglePin(id) {
+            const pins = pinnedIds();
+            const at = pins.indexOf(id);
+            if (at === -1) pins.push(id); else pins.splice(at, 1);
+            try { localStorage.setItem("vt_pins", JSON.stringify(pins.slice(0, 12))); } catch (e) {}
+            buzz(6);
+            render();
+        }
+
+        function pinnedHtml() {
+            // Only what the PC currently has: a pin for a window that was
+            // closed is not a row, it is a promise the page cannot keep.
+            const rows = pinnedIds()
+                .map(id => findTarget(id))
+                .filter(Boolean)
+                .map(t => rowHtml({
+                    icon: t.icon || KIND_ICONS[t.kind] || "●",
+                    title: t.title,
+                    sub: [t.subtitle, t.status].filter(Boolean).join(" · "),
+                    target: t.id,
+                    sheet: t.id,
+                    chevron: true,
+                }))
+                .join("");
+            return rows ? sectionHtml("Pinned", `<div class="card">${rows}</div>`) : "";
+        }
+
         function renderHome(el) {
             let html = searchHtml("homeSearch", "Search apps, windows, anything", homeQuery);
             html += '<div id="homeResults"></div>';
@@ -1941,7 +2250,7 @@
         }
 
         function homeDashboardHtml() {
-            let html = "";
+            let html = pinnedHtml();
 
             // 1. What is playing, with its controls already on screen.
             const players = playerTargets();
@@ -2286,6 +2595,8 @@
                          sub: "What the PC is showing", nav: "notifs:view", chevron: true}) +
                 rowHtml({icon: "📁", title: "Files",
                          sub: "Send a file to the PC, or take one back", nav: "files:view", chevron: true}) +
+                rowHtml({icon: "🖼", title: "Screenshot",
+                         sub: "One still frame of the PC screen", nav: "screen:view", chevron: true}) +
                 '</div>');
 
             let sliders = "";
@@ -2352,10 +2663,22 @@
                                     null, {note: power.subtitle || power.status});
             }
 
-            html += sectionHtml("This device", `<div class="card">${rowHtml({
+            html += sectionHtml("This device", '<div class="card">' + rowHtml({
                 icon: "🔑", title: "Paired devices",
                 nav: "devices:list", chevron: true,
-            })}</div>`);
+            }) + rowHtml({
+                icon: "🩺", title: "What works",
+                sub: healthSummary || "What the PC can and cannot do right now",
+                nav: "health:list", chevron: true,
+            }) + rowHtml({
+                icon: "📜", title: "Security log",
+                sub: "Every action and every rejection",
+                nav: "audit:list", chevron: true,
+            }) + rowHtml({
+                icon: "🖥", title: "Other PCs",
+                sub: serverList().length > 1 ? `${serverList().length} saved` : "Add another machine",
+                nav: "servers:list", chevron: true,
+            }) + '</div>');
 
             el.innerHTML = html;
         }
@@ -2385,7 +2708,11 @@
         }
 
         function targetDetailHtml(target) {
-            let html = '<div class="sheet-head">';
+            let html = "";
+            if (target.art) {
+                html += `<div class="art"><img data-art="${escapeHtml(target.art)}" alt=""></div>`;
+            }
+            html += '<div class="sheet-head">';
             html += `<div class="sheet-title">${escapeHtml(target.title)}</div>`;
             const sub = [target.subtitle, target.status].filter(Boolean).join(" · ");
             if (sub) html += `<div class="sheet-sub">${escapeHtml(sub)}</div>`;
@@ -2418,6 +2745,11 @@
             if (!sliders.length && !buttons.length) {
                 html += '<div class="empty">No actions available.</div>';
             }
+
+            html += '<div class="btnrow">' +
+                `<button data-pin="${escapeAttr(target.id)}">` +
+                (isPinned(target.id) ? "Unpin from home" : "Pin to home") +
+                '</button></div>';
             return html;
         }
 
@@ -2581,7 +2913,7 @@
             if (ok) {
                 devicesList = null;
                 navTop();
-                startPolling();
+                startUpdates();
             } else {
                 renderPairing();
             }
@@ -2605,15 +2937,211 @@
                 const isCurrent = d.id === currentDeviceId;
                 const seen = d.last_seen ? relativeTime(d.last_seen) : "never";
                 const where = d.last_ip ? ` · ${d.last_ip}` : "";
+                // A guest phone and a permanent one look identical otherwise,
+                // and which is which is the whole reason for pairing a guest.
+                const limits = [
+                    d.scope === "guest" ? "media only" : "",
+                    d.expires ? "until " + relativeTime(d.expires).replace(" ago", "") : "",
+                ].filter(Boolean).join(" · ");
                 rows += rowHtml({
-                    icon: isCurrent ? "📱" : "🔑",
+                    icon: isCurrent ? "📱" : (d.scope === "guest" ? "👤" : "🔑"),
                     title: d.name + (isCurrent ? " (this device)" : ""),
-                    sub: `last seen ${seen}${where}`,
+                    sub: `last seen ${seen}${where}` + (limits ? " · " + limits : ""),
                     revoke: d.id,
                     extraClass: isCurrent ? "device-current" : "",
                 });
             });
             el.innerHTML = `<div class="card">${rows}</div>`;
+        }
+
+        // === Security log ===
+        let auditEntries = null;
+        let auditError = "";
+
+        async function fetchAudit() {
+            try {
+                const resp = await fetch(`${API_BASE}/audit?count=80`, {headers: getHeaders()});
+                if (!resp.ok) { auditError = `Could not read the log (${resp.status})`; }
+                else { auditEntries = (await resp.json()).entries || []; auditError = ""; }
+            } catch (e) {
+                auditError = "Connection error";
+            }
+            const el = document.getElementById("auditList");
+            if (el) paintAudit(el);
+        }
+
+        function auditLine(entry) {
+            const bits = [entry.who, entry.device ? entry.device.slice(0, 8) : "", entry.ip,
+                          entry.target, entry.action, entry.reason, entry.detail]
+                .filter(Boolean);
+            return bits.join(" · ");
+        }
+
+        function paintAudit(el) {
+            if (auditError) { el.innerHTML = `<div class="empty">${escapeHtml(auditError)}</div>`; return; }
+            if (auditEntries === null) { el.innerHTML = '<div class="empty">Loading…</div>'; return; }
+            if (!auditEntries.length) { el.innerHTML = '<div class="empty">Nothing logged yet.</div>'; return; }
+            // Newest first, and a rejection is not a quieter row than an action.
+            const rows = auditEntries.slice().reverse().map(entry => {
+                const rejected = String(entry.event || "").startsWith("auth.reject") || entry.ok === false;
+                return rowHtml({
+                    icon: rejected ? "⛔" : "✓",
+                    title: entry.event || "event",
+                    sub: [auditLine(entry), entry.ts].filter(Boolean).join(" — "),
+                    wrap: true,
+                    danger: rejected,
+                });
+            }).join("");
+            el.innerHTML = `<div class="card">${rows}</div>`;
+        }
+
+        function renderAudit(el) {
+            el.innerHTML = sectionHtml("Recent", '<div id="auditList"></div>' +
+                '<div class="btnrow"><button id="auditRefresh">Refresh</button></div>');
+            paintAudit(document.getElementById("auditList"));
+            fetchAudit();
+        }
+
+        // === More than one PC ===
+        // Switching is navigation, not a cross-origin call. Credentials are
+        // per-origin by design -- localStorage keeps them apart, and so does
+        // the server's own connect-src policy -- so this list holds names and
+        // addresses only, and the other machine's own page holds its secrets.
+        function serverList() {
+            let saved = [];
+            try { saved = JSON.parse(localStorage.getItem("vt_servers") || "[]"); } catch (e) { saved = []; }
+            if (!Array.isArray(saved)) saved = [];
+            saved = saved.filter(entry => entry && typeof entry.url === "string");
+            const here = window.location.origin;
+            if (!saved.some(entry => entry.url === here)) {
+                saved.unshift({name: "This PC", url: here});
+                saveServers(saved);
+            }
+            return saved;
+        }
+
+        function saveServers(list) {
+            try { localStorage.setItem("vt_servers", JSON.stringify(list)); } catch (e) {}
+        }
+
+        function addServer(name, url, mac) {
+            url = (url || "").trim().replace(/\/+$/, "");
+            if (!/^https?:\/\//.test(url)) { showError("Enter a full http:// or https:// address"); return; }
+            mac = (mac || "").trim();
+            if (mac && !/^([0-9a-f]{2}[:-]){5}[0-9a-f]{2}$/i.test(mac)) {
+                showError("That is not a MAC address");
+                return;
+            }
+            const list = serverList();
+            if (list.some(entry => entry.url === url)) { showError("That PC is already saved"); return; }
+            list.push({name: (name || "").trim() || url.replace(/^https?:\/\//, ""),
+                       url: url, mac: mac});
+            saveServers(list);
+            render();
+        }
+
+        function removeServer(url) {
+            saveServers(serverList().filter(entry => entry.url !== url));
+            render();
+        }
+
+        // url -> "up" | "down" | "checking". Filled by the PC, because this
+        // page cannot ask another origin itself: the browser refuses the
+        // cross-origin request and our own CSP says connect-src 'self'.
+        let serverReach = {};
+
+        let serverProbing = false;
+        let serverProbeAt = 0;
+
+        async function probeServers(force) {
+            const here = window.location.origin;
+            const urls = serverList().map(e => e.url).filter(u => u !== here);
+            if (!urls.length || serverProbing) return;
+            const stale = Date.now() - serverProbeAt > 15000;
+            const unknown = urls.some(u => !serverReach[u]);
+            // Rendering the list must not start a probe that re-renders the
+            // list: without this the answer would trigger the next question.
+            if (!force && !stale && !unknown) return;
+            serverProbing = true;
+            serverProbeAt = Date.now();
+            urls.forEach(u => { if (!serverReach[u]) serverReach[u] = "checking"; });
+            try {
+                const resp = await fetch(`${API_BASE}/probe`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({urls: urls}),
+                });
+                const data = await resp.json();
+                (data.servers || []).forEach(row => {
+                    serverReach[row.url] = row.reachable ? "up" : "down";
+                });
+            } catch (e) {
+                // Not knowing is its own state: showing every PC as unreachable
+                // because our own server did not answer would be a lie about
+                // them.
+                urls.forEach(u => { delete serverReach[u]; });
+            }
+            serverProbing = false;
+            if (selfOwnedView().startsWith("servers:")) render();
+        }
+
+        async function wakeServer(mac) {
+            try {
+                const resp = await fetch(`${API_BASE}/wake`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({mac}),
+                });
+                const data = await resp.json();
+                if (!data.ok) { showError(data.message || "Could not send it"); return; }
+                buzz(6);
+                // Nothing acknowledges a wake packet, so the honest thing to
+                // do is check again in a few seconds and let the row answer.
+                showNotice("Wake packet sent — checking again shortly");
+                setTimeout(() => probeServers(true), 8000);
+            } catch (e) {
+                showError("Connection error");
+            }
+        }
+
+        function serverIcon(url, here) {
+            if (url === here) return "🟢";
+            if (serverReach[url] === "up") return "🖥";
+            if (serverReach[url] === "down") return "⚠";
+            return "…";
+        }
+
+        function serverNote(url, here) {
+            if (url === here) return "";
+            if (serverReach[url] === "down") return "not answering the PC";
+            if (serverReach[url] === "up") return "answering";
+            return "checking";
+        }
+
+        function renderServers(el) {
+            const here = window.location.origin;
+            probeServers();
+            const rows = serverList().map(entry => rowHtml({
+                icon: serverIcon(entry.url, here),
+                title: entry.name + (entry.url === here ? " (open now)" : ""),
+                sub: [entry.url, serverNote(entry.url, here)].filter(Boolean).join(" · "),
+                wrap: true,
+                server: entry.url === here ? "" : entry.url,
+                extraClass: entry.url === here ? "device-current" : "",
+            }) + (entry.mac && serverReach[entry.url] === "down"
+                // Offered exactly when it is the useful thing to do: the PC is
+                // not answering, and we know how to knock on its door.
+                ? `<div class="btnrow"><button data-wake="${escapeAttr(entry.mac)}">` +
+                  'Wake it</button></div>'
+                : "")).join("");
+
+            el.innerHTML = sectionHtml("Saved PCs", `<div class="card">${rows}</div>`,
+                null, {note: "Each PC keeps its own pairing. Switching opens its page. " +
+                             "Reachability is checked from this PC, so a machine it can " +
+                             "see may still be out of the phone's reach."}) +
+                sectionHtml("Add a PC",
+                    '<input class="box" id="serverName" placeholder="Name (optional)">' +
+                    '<input class="box" id="serverUrl" placeholder="https://your-tunnel.example.com" ' +
+                    'autocapitalize="off" autocorrect="off" spellcheck="false">' +
+                    '<input class="box" id="serverMac" placeholder="MAC address (optional, to wake it)" ' +
+                    'autocapitalize="off" autocorrect="off" spellcheck="false">' +
+                    '<div class="btnrow"><button class="primary" id="serverAdd">Save</button></div>');
         }
 
         async function fetchDevices() {
@@ -2817,6 +3345,33 @@
                 const revoke = ev.target.closest("[data-revoke]");
                 if (revoke) { revokeDevice(revoke.dataset.revoke); return; }
 
+                const serverRow = ev.target.closest("[data-server]");
+                if (serverRow) {
+                    const url = serverRow.dataset.server;
+                    if (ev.target.closest("[data-server-remove]")) { removeServer(url); return; }
+                    window.location.href = url;
+                    return;
+                }
+                if (ev.target.closest("#auditRefresh")) { fetchAudit(); return; }
+                if (ev.target.closest("#healthRefresh")) { fetchHealth(); return; }
+                if (ev.target.closest("#serverAdd")) {
+                    const name = document.getElementById("serverName");
+                    const url = document.getElementById("serverUrl");
+                    const mac = document.getElementById("serverMac");
+                    addServer(name ? name.value : "", url ? url.value : "",
+                              mac ? mac.value : "");
+                    return;
+                }
+
+                const wake = ev.target.closest("[data-wake]");
+                if (wake) { wakeServer(wake.dataset.wake); return; }
+
+                const unmute = ev.target.closest("[data-unmute]");
+                if (unmute) { muteApp(unmute.dataset.unmute, false); return; }
+
+                const dismissBtn = ev.target.closest("[data-dismiss]");
+                if (dismissBtn) { dismissNotification(dismissBtn.dataset.dismiss); return; }
+
                 const clickBtn = ev.target.closest("[data-click]");
                 if (clickBtn) {
                     buzz(5);
@@ -2832,6 +3387,8 @@
                     return;
                 }
 
+                if (ev.target.closest("#dictate")) { toggleDictation(); return; }
+
                 if (ev.target.closest("#typeSend")) {
                     const box = document.getElementById("typeBox");
                     const text = box ? box.value : typeDraft;
@@ -2845,10 +3402,19 @@
                     return;
                 }
 
+                if (ev.target.closest("#shotTake")) { takeScreenshot(); return; }
                 if (ev.target.closest("#clipGet")) { fetchClipboard(); return; }
                 if (ev.target.closest("#clipSend")) { pushClipboard(); return; }
                 if (ev.target.closest("#clipCopy")) { copyToPhone(); return; }
+                if (ev.target.closest("#clipOpen")) { openOnPC(); return; }
+                if (ev.target.closest("#clipHistoryClear")) { clearClipHistory(); return; }
+                const clipRow = ev.target.closest("[data-clip]");
+                if (clipRow) { useClip(clipRow.dataset.clip); return; }
 
+                if (ev.target.closest("#pushToggle")) {
+                    if (pushState === "on") disablePush(); else enablePush();
+                    return;
+                }
                 if (ev.target.closest("#notifClear")) {
                     notifs = [];
                     renderNotifList();
@@ -2860,6 +3426,12 @@
 
                 const openFile = ev.target.closest("[data-openfile]");
                 if (openFile) { openFileOnPc(openFile.dataset.openfile); return; }
+
+                const pin = ev.target.closest("[data-pin]");
+                if (pin) { togglePin(pin.dataset.pin); return; }
+
+                const wallpaper = ev.target.closest("[data-wallpaper]");
+                if (wallpaper) { setWallpaper(wallpaper.dataset.wallpaper); return; }
 
                 const more = ev.target.closest("[data-more]");
                 if (more) { buzz(5); openSheet(more.dataset.more); return; }
@@ -2909,6 +3481,16 @@
             content.addEventListener("click", clickHandler);
             document.getElementById("sheetBody").addEventListener("click", clickHandler);
 
+            // Long-press on Android raises contextmenu. A notification row
+            // already carries Dismiss, and a second button would leave neither
+            // of them a thumb's width, so muting the app lives here.
+            content.addEventListener("contextmenu", (ev) => {
+                const row = ev.target.closest("[data-mute]");
+                if (!row) return;
+                ev.preventDefault();
+                muteApp(row.dataset.mute, true);
+            });
+
             const keyHandler = (ev) => {
                 if (ev.key === "Enter" && (ev.target.id === "pairCode" || ev.target.id === "pairName")) {
                     ev.preventDefault();
@@ -2935,7 +3517,18 @@
                 if (ev.target.id === "pairCode") { pairCodeDraft = ev.target.value; return; }
                 if (ev.target.id === "pairName") { pairNameDraft = ev.target.value; return; }
                 if (ev.target.id === "typeBox") { typeDraft = ev.target.value; return; }
-                if (ev.target.id === "clipBox") { clipboardDraft = ev.target.value; return; }
+                if (ev.target.id === "clipBox") {
+                    const wasLink = looksLikeLink(clipboardDraft);
+                    clipboardDraft = ev.target.value;
+                    // Re-render only when the answer changed, so typing does
+                    // not rebuild the box under the thumb on every keystroke.
+                    if (wasLink !== looksLikeLink(clipboardDraft) && isClipboardView()) {
+                        renderClipboard(document.getElementById("content"));
+                        const box = document.getElementById("clipBox");
+                        if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+                    }
+                    return;
+                }
                 if (ev.target.type === "search") { onSearchInput(ev.target.id, ev.target.value); return; }
                 const slider = ev.target.closest('input[type="range"][data-action]');
                 if (slider) handleSliderChange(slider);
@@ -2974,6 +3567,16 @@
 
         async function sendInput(payload, opts) {
             opts = opts || {};
+            // A drag is a delta every 50 ms. Over the socket that is a frame;
+            // over POST it is a request, a header set and an auth check per
+            // millimetre of thumb travel. Only the fire-and-forget ops go this
+            // way: anything whose result is shown still asks over REST.
+            if (opts.live && liveOpen()) {
+                try {
+                    ws.send(JSON.stringify(Object.assign({type: "input"}, payload)));
+                    return {ok: true};
+                } catch (e) { /* fall through to the POST */ }
+            }
             try {
                 const resp = await fetch(`${API_BASE}/input`, {
                     method: "POST",
@@ -3016,7 +3619,7 @@
 
             padInFlight = true;
             try {
-                for (const op of ops) await sendInput(op);
+                for (const op of ops) await sendInput(op, {live: true});
             } finally {
                 padInFlight = false;
                 if (Math.round(padMove.dx) || Math.round(padMove.dy) ||
@@ -3109,6 +3712,86 @@
             return !!findTarget("system:extension");
         }
 
+        // === Dictation ========================================================
+        // The phone already has speech recognition and the microphone
+        // permission; the PC already has a way to type into the focused
+        // window. This is the wire between them, and it stays on the phone: no
+        // audio is ever sent to the PC, only the text that came out of it.
+        let recogniser = null;
+        let dictating = false;
+        let dictateNote = "";
+
+        function speechSupported() {
+            return typeof window.SpeechRecognition === "function" ||
+                   typeof window.webkitSpeechRecognition === "function";
+        }
+
+        function paintDictateNote() {
+            const note = document.getElementById("dictateNote");
+            if (note) note.textContent = dictateNote;
+            const button = document.getElementById("dictate");
+            if (button) button.textContent = dictating ? "Stop" : "Dictate";
+        }
+
+        function toggleDictation() {
+            if (dictating) { stopDictation(); return; }
+            const Recogniser = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!Recogniser) return;
+
+            recogniser = new Recogniser();
+            recogniser.lang = navigator.language || "en-US";
+            recogniser.interimResults = true;
+            recogniser.continuous = true;
+
+            recogniser.onresult = (ev) => {
+                let finished = "";
+                let pending = "";
+                for (let i = ev.resultIndex; i < ev.results.length; i++) {
+                    const text = ev.results[i][0].transcript;
+                    if (ev.results[i].isFinal) finished += text;
+                    else pending += text;
+                }
+                if (finished.trim()) {
+                    // Sent as each phrase is recognised rather than at the end:
+                    // the point is watching the words land on the PC.
+                    const box = document.getElementById("typeBox");
+                    typeDraft = (typeDraft ? typeDraft + " " : "") + finished.trim();
+                    if (box) box.value = typeDraft;
+                    sendInput({op: "type", text: finished});
+                }
+                dictateNote = pending.trim() ? "…" + pending.trim() : "Listening";
+                paintDictateNote();
+            };
+            recogniser.onerror = (ev) => {
+                dictating = false;
+                dictateNote = ev.error === "not-allowed"
+                    ? "The browser refused the microphone"
+                    : `Dictation stopped: ${ev.error}`;
+                paintDictateNote();
+            };
+            recogniser.onend = () => {
+                dictating = false;
+                if (dictateNote === "Listening" || dictateNote.startsWith("…")) dictateNote = "";
+                paintDictateNote();
+            };
+
+            try {
+                recogniser.start();
+                dictating = true;
+                dictateNote = "Listening";
+            } catch (e) {
+                dictateNote = "Could not start dictation";
+            }
+            paintDictateNote();
+        }
+
+        function stopDictation() {
+            dictating = false;
+            dictateNote = "";
+            try { if (recogniser) recogniser.stop(); } catch (e) {}
+            paintDictateNote();
+        }
+
         function renderTouchpad(el) {
             let html = "";
             if (extensionMissing()) {
@@ -3134,8 +3817,14 @@
                 '<div class="btnrow">' +
                 '<button data-keys="return">Enter</button>' +
                 '<button data-keys="backspace">Backspace</button>' +
+                // Offered only where the browser really has it: on a browser
+                // without speech recognition the button would open nothing and
+                // explain nothing.
+                (speechSupported()
+                    ? `<button id="dictate">${dictating ? "Stop" : "Dictate"}</button>` : "") +
                 '<button class="primary" id="typeSend">Send text</button>' +
-                '</div>');
+                '</div>' +
+                (speechSupported() ? '<div class="section-note" id="dictateNote"></div>' : ""));
 
             html += sectionHtml("Presentation",
                 '<div class="keypad">' +
@@ -3194,6 +3883,37 @@
             }
         }
 
+        // The same rule the PC applies, so the button appears exactly when the
+        // request would succeed: an http(s) URL, or a bare host that cannot be
+        // anything else.
+        function looksLikeLink(text) {
+            const candidate = (text || "").trim();
+            if (!candidate || /[\s\u0000-\u001f]/.test(candidate)) return false;
+            if (candidate.includes("://")) return /^https?:\/\/[^/]+/i.test(candidate);
+            return /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9-]+)+(:\d+)?([/?#].*)?$/i.test(candidate);
+        }
+
+        async function openOnPC(text) {
+            const box = document.getElementById("clipBox");
+            const url = (text !== undefined ? text : (box ? box.value : clipboardDraft)).trim();
+            if (!looksLikeLink(url)) { showError("That is not a link"); return; }
+            try {
+                const resp = await fetch(`${API_BASE}/open`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({url}),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    buzz(6);
+                    clipboardNote = data.message || "Opened on the PC";
+                } else {
+                    showError(data.message || "Could not open it");
+                }
+                renderClipboardStatus();
+            } catch (e) {
+                showError("Connection error");
+            }
+        }
+
         async function pushClipboard() {
             const box = document.getElementById("clipBox");
             const text = box ? box.value : clipboardDraft;
@@ -3241,6 +3961,72 @@
             buttons.forEach(b => { b.disabled = clipboardBusy; });
         }
 
+        // === Clipboard history ===============================================
+        // Memory only, on the PC, and started by opening this screen. It is
+        // offered because "send me that" is nearly always followed by "and the
+        // one before it" -- and cleared with one button, because a clipboard
+        // sometimes holds a password.
+        let clipHistory = [];
+        let clipHistoryError = "";
+
+        async function fetchClipHistory() {
+            try {
+                const resp = await fetch(`${API_BASE}/clipboard/history`, {headers: getHeaders()});
+                const data = await resp.json();
+                clipHistory = data.entries || [];
+                clipHistoryError = data.error || "";
+            } catch (e) {
+                clipHistoryError = "Connection error";
+            }
+            paintClipHistory();
+        }
+
+        async function clearClipHistory() {
+            try {
+                await fetch(`${API_BASE}/clipboard/history`, {
+                    method: "DELETE", headers: getHeaders(),
+                });
+                clipHistory = [];
+                buzz(6);
+            } catch (e) {
+                showError("Connection error");
+            }
+            paintClipHistory();
+        }
+
+        function useClip(seq) {
+            const entry = clipHistory.find(e => String(e.seq) === String(seq));
+            if (!entry) return;
+            clipboardDraft = entry.text;
+            renderClipboard(document.getElementById("content"));
+        }
+
+        function paintClipHistory() {
+            const el = document.getElementById("clipHistory");
+            if (!el) return;
+            if (clipHistoryError) {
+                el.innerHTML = `<div class="empty">${escapeHtml(clipHistoryError)}</div>`;
+                return;
+            }
+            if (!clipHistory.length) {
+                el.innerHTML = '<div class="empty">Nothing yet. What gets copied on the PC ' +
+                    'from now on shows up here, and only in memory.</div>';
+                return;
+            }
+            el.innerHTML = '<div class="card">' + clipHistory.map(entry => rowHtml({
+                icon: "📋",
+                title: clipPreview(entry.text),
+                sub: relativeTime(entry.ts) + (entry.truncated ? " · shortened" : ""),
+                clip: entry.seq,
+                wrap: true,
+            })).join("") + '</div>';
+        }
+
+        function clipPreview(text) {
+            const oneLine = (text || "").replace(/\s+/g, " ").trim();
+            return oneLine.length > 80 ? oneLine.slice(0, 79) + "…" : oneLine;
+        }
+
         function renderClipboard(el) {
             let html = sectionHtml("PC clipboard",
                 `<textarea class="box" id="clipBox" placeholder="Text to send to the PC clipboard"` +
@@ -3250,10 +4036,75 @@
                 '<button id="clipCopy">Copy here</button>' +
                 '<button class="primary" id="clipSend">Send to PC</button>' +
                 '</div>' +
+                // Only offered for something that is actually a link: a button
+                // that would answer "that is not a link" is one nobody should
+                // have been able to press.
+                (looksLikeLink(clipboardDraft)
+                    ? '<div class="btnrow"><button id="clipOpen">Open on the PC</button></div>'
+                    : "") +
                 '<div class="section-note" id="clipStatus"></div>');
+            html += sectionHtml("Recently copied on the PC",
+                '<div id="clipHistory"></div>' +
+                '<div class="btnrow"><button id="clipHistoryClear">Forget these</button></div>',
+                null, {note: "Kept in memory on the PC only, and only while it is running."});
             el.innerHTML = html;
             renderClipboardStatus();
+            paintClipHistory();
+            fetchClipHistory();
             if (!clipboardText && !clipboardNote) fetchClipboard();
+        }
+
+        // === What works =======================================================
+        // `vt doctor` in the page, because the person debugging is holding the
+        // phone and the PC is across the room. Every row is a read.
+        const HEALTH_ICONS = {ok: "✓", warn: "⚠", info: "ℹ", fail: "✗"};
+        let healthChecks = [];
+        let healthSummary = "";
+        let healthError = "";
+
+        async function fetchHealth() {
+            try {
+                const resp = await fetch(`${API_BASE}/diagnostics`, {headers: getHeaders()});
+                const data = await resp.json();
+                healthChecks = data.checks || [];
+                healthSummary = data.summary || "";
+                healthError = "";
+            } catch (e) {
+                healthError = "Connection error";
+            }
+            paintHealth();
+        }
+
+        function paintHealth() {
+            const el = document.getElementById("healthList");
+            if (!el) return;
+            if (healthError) {
+                el.innerHTML = `<div class="empty">${escapeHtml(healthError)}</div>`;
+                return;
+            }
+            if (!healthChecks.length) {
+                el.innerHTML = '<div class="empty">Checking…</div>';
+                return;
+            }
+            el.innerHTML = '<div class="card">' + healthChecks.map(check => rowHtml({
+                icon: HEALTH_ICONS[check.state] || "•",
+                title: check.title,
+                // Everything the row knows, in the order someone reads it:
+                // what is true, what it costs, what to do about it.
+                sub: [check.detail,
+                      check.lost ? "without it: " + check.lost : "",
+                      check.fix ? "fix: " + check.fix : ""].filter(Boolean).join(" · "),
+                wrap: true,
+            })).join("") + '</div>';
+        }
+
+        function renderHealth(el) {
+            el.innerHTML = sectionHtml("What works",
+                '<div id="healthList"></div>' +
+                '<div class="btnrow"><button id="healthRefresh">Check again</button></div>',
+                null, {note: healthSummary});
+            paintHealth();
+            fetchHealth();
         }
 
         // === Notifications ====================================================
@@ -3261,6 +4112,7 @@
         let notifs = [];
         let notifSeq = 0;
         let notifError = "";
+        let notifMuted = [];
         let notifTimer = null;
 
         async function fetchNotifications() {
@@ -3268,6 +4120,7 @@
                 const resp = await fetch(`${API_BASE}/notifications?since=${notifSeq}`, {headers: getHeaders()});
                 const data = await resp.json();
                 notifError = data.error || "";
+                notifMuted = data.muted || [];
                 const fresh = data.entries || [];
                 if (fresh.length) {
                     fresh.forEach(entry => { notifSeq = Math.max(notifSeq, entry.seq); });
@@ -3282,6 +4135,18 @@
             }
         }
 
+        function receiveNotifications(entries) {
+            // Pushed over the socket rather than found by the next poll. The
+            // list is the same one the poll fills, so a screen opened later
+            // shows what arrived while it was closed.
+            const fresh = entries.filter(e => e && e.seq > notifSeq);
+            if (!fresh.length) return;
+            fresh.forEach(entry => { notifSeq = Math.max(notifSeq, entry.seq); });
+            notifs = fresh.reverse().concat(notifs).slice(0, 60);
+            notifError = "";
+            renderNotifList();
+        }
+
         function startNotifPoll() {
             stopNotifPoll();
             fetchNotifications();
@@ -3289,6 +4154,10 @@
                 // The screen owns the poll: leaving it must not leave a timer
                 // behind hitting the PC every three seconds forever.
                 if (!isNotifView()) { stopNotifPoll(); return; }
+                // With the socket up the server pushes each notification as it
+                // arrives, so this is only here to catch one that was missed
+                // while the socket was down.
+                if (ws && ws.readyState === WebSocket.OPEN) return;
                 fetchNotifications();
             }, 3000);
         }
@@ -3313,17 +4182,189 @@
                 icon: "🔔",
                 title: n.summary || n.app,
                 sub: [n.app, n.body].filter(Boolean).join(" · "),
-                meta: relativeTime(n.ts),
+                meta: n.id ? "" : relativeTime(n.ts),
+                // No id means the daemon's reply was never seen, and closing it
+                // would fail. No button beats a button that lies.
+                dismiss: n.id || 0,
+                mute: n.app || "",
                 wrap: true,
-            })).join("") + '</div>';
+            })).join("") + '</div>' + mutedHtml();
+        }
+
+        function mutedHtml() {
+            if (!notifMuted.length) return "";
+            const rows = notifMuted.map(app => rowHtml({
+                icon: "🔕",
+                title: app,
+                sub: "muted for now",
+                unmute: app,
+            })).join("");
+            return sectionHtml("Muted", `<div class="card">${rows}</div>`, null,
+                {note: "Until the PC's server restarts."});
+        }
+
+        async function muteApp(app, muted) {
+            try {
+                const resp = await fetch(`${API_BASE}/notifications/mute`, {
+                    method: "POST", headers: getHeaders(),
+                    body: JSON.stringify({app: app, muted: muted}),
+                });
+                const data = await resp.json();
+                if (!data.ok) { showError(data.message || "Could not do that"); return; }
+                buzz(6);
+                notifMuted = data.muted || [];
+                if (muted) notifs = notifs.filter(n => n.app !== app);
+                renderNotifList();
+            } catch (e) {
+                showError("Connection error");
+            }
+        }
+
+        async function dismissNotification(id) {
+            try {
+                const resp = await fetch(`${API_BASE}/notifications/dismiss`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({id: Number(id)}),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    buzz(6);
+                    notifs = notifs.filter(n => String(n.id) !== String(id));
+                    renderNotifList();
+                } else {
+                    showError(data.message || "Could not dismiss it");
+                }
+            } catch (e) {
+                showError("Connection error");
+            }
+        }
+
+        // === Push =============================================================
+        // The only thing that reaches a phone whose page is closed. The
+        // browser hands back a subscription; the PC keeps it and posts to it.
+        let pushState = "unknown";   // unknown | unavailable | off | on | denied
+        let pushNote = "";
+
+        function pushSupported() {
+            return "serviceWorker" in navigator && "PushManager" in window &&
+                   typeof Notification !== "undefined";
+        }
+
+        async function fetchPushState() {
+            if (!pushSupported()) { pushState = "unavailable"; pushNote = "This browser cannot do push."; return; }
+            try {
+                const resp = await fetch(`${API_BASE}/push/key`, {headers: getHeaders()});
+                const data = await resp.json();
+                if (!data.available) {
+                    pushState = "unavailable";
+                    pushNote = data.message || "The PC cannot send push messages.";
+                    return;
+                }
+                pushKey = data.key || "";
+                const registration = await navigator.serviceWorker.ready;
+                const existing = await registration.pushManager.getSubscription();
+                pushState = existing && data.subscribed ? "on" : "off";
+                if (Notification.permission === "denied") pushState = "denied";
+                pushNote = "";
+            } catch (e) {
+                pushState = "unknown";
+                pushNote = "Could not ask the PC about push.";
+            }
+        }
+
+        let pushKey = "";
+
+        function keyBytes(base64url) {
+            const padded = (base64url + "=".repeat((4 - base64url.length % 4) % 4))
+                .replace(/-/g, "+").replace(/_/g, "/");
+            const raw = atob(padded);
+            return Uint8Array.from(raw, c => c.charCodeAt(0));
+        }
+
+        async function enablePush() {
+            if (!pushSupported() || !pushKey) return;
+            try {
+                const permission = await Notification.requestPermission();
+                if (permission !== "granted") {
+                    pushState = permission === "denied" ? "denied" : "off";
+                    pushNote = "The browser did not allow notifications.";
+                    renderNotifications(document.getElementById("content"));
+                    return;
+                }
+                const registration = await navigator.serviceWorker.ready;
+                const subscription = await registration.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: keyBytes(pushKey),
+                });
+                const resp = await fetch(`${API_BASE}/push/subscribe`, {
+                    method: "POST", headers: getHeaders(),
+                    body: JSON.stringify({subscription: subscription.toJSON()}),
+                });
+                const data = await resp.json();
+                if (!data.ok) { showError(data.message || "The PC would not take it"); return; }
+                pushState = "on";
+                pushNote = "";
+                buzz(6);
+            } catch (e) {
+                pushNote = "Could not turn push on: " + e;
+            }
+            renderNotifications(document.getElementById("content"));
+        }
+
+        async function disablePush() {
+            try {
+                const registration = await navigator.serviceWorker.ready;
+                const existing = await registration.pushManager.getSubscription();
+                const endpoint = existing ? existing.endpoint : "";
+                if (existing) await existing.unsubscribe();
+                await fetch(`${API_BASE}/push/unsubscribe`, {
+                    method: "POST", headers: getHeaders(),
+                    body: JSON.stringify({endpoint}),
+                });
+                pushState = "off";
+                pushNote = "";
+                buzz(6);
+            } catch (e) {
+                pushNote = "Could not turn push off: " + e;
+            }
+            renderNotifications(document.getElementById("content"));
+        }
+
+        function pushHtml() {
+            if (pushState === "unavailable") {
+                return sectionHtml("With the page closed",
+                    `<div class="empty">${escapeHtml(pushNote || "Not available here.")}</div>`);
+            }
+            if (pushState === "denied") {
+                return sectionHtml("With the page closed",
+                    '<div class="empty">This browser has notifications blocked for this ' +
+                    'page. Allow them in the site settings, then come back.</div>');
+            }
+            const on = pushState === "on";
+            return sectionHtml("With the page closed",
+                '<div class="btnrow">' +
+                `<button class="${on ? "" : "primary"}" id="pushToggle">` +
+                (on ? "Stop sending these" : "Send these to my phone") +
+                '</button></div>' +
+                (pushNote ? `<div class="section-note">${escapeHtml(pushNote)}</div>` : ""),
+                null,
+                {note: on
+                    ? "Notifications arrive even when this page is shut."
+                    : "Without this, notifications only arrive while this page is open."});
         }
 
         function renderNotifications(el) {
             el.innerHTML = sectionHtml("Recent",
                 '<div id="notifList"></div>' +
-                '<div class="btnrow"><button id="notifClear">Clear list</button></div>');
+                '<div class="btnrow"><button id="notifClear">Clear list</button></div>',
+                null, {note: "Press and hold a notification to mute that app for now."}) +
+                pushHtml();
             renderNotifList();
             startNotifPoll();
+            if (pushState === "unknown") {
+                fetchPushState().then(() => {
+                    if (isNotifView()) renderNotifications(document.getElementById("content"));
+                });
+            }
         }
 
         // === File transfer ====================================================
@@ -3454,7 +4495,29 @@
             }) + '<div class="btnrow">' +
                 `<button data-download="${escapeAttr(f.name)}">Save to phone</button>` +
                 `<button data-openfile="${escapeAttr(f.name)}">Open on PC</button>` +
+                // Offered only for pictures, because it is the only thing the
+                // PC could do with anything else, which is nothing.
+                (isPicture(f.name)
+                    ? `<button data-wallpaper="${escapeAttr(f.name)}">Set as wallpaper</button>`
+                    : "") +
                 '</div>').join("") + '</div>';
+        }
+
+        function isPicture(name) {
+            return /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name || "");
+        }
+
+        async function setWallpaper(name) {
+            try {
+                const resp = await fetch(`${API_BASE}/files/wallpaper`, {
+                    method: "POST", headers: getHeaders(), body: JSON.stringify({name}),
+                });
+                const data = await resp.json();
+                if (data.ok) { buzz(6); showNotice(data.message || "Wallpaper set"); }
+                else showError(data.message || "Could not set the wallpaper");
+            } catch (e) {
+                showError("Connection error");
+            }
         }
 
         function renderFiles(el) {
@@ -3468,6 +4531,117 @@
             fetchFiles();
         }
 
+        // === Screenshot ===
+        // One frame, on request. No timer and no auto-refresh: this is not a
+        // stream, and the portal prompt on the PC is stated up front rather
+        // than discovered.
+        let shotUrl = "";
+        let shotBusy = false;
+        let shotError = "";
+
+        function renderScreenshot(el) {
+            el.innerHTML = sectionHtml("PC screen",
+                '<div class="btnrow">' +
+                `<button class="primary" id="shotTake"${shotBusy ? " disabled" : ""}>` +
+                (shotBusy ? "Taking…" : "Take a screenshot") + '</button></div>' +
+                '<div class="section-note" id="shotStatus"></div>' +
+                (shotUrl ? `<img id="shotImage" src="${shotUrl}" alt="The PC screen" ` +
+                           'style="width:100%;border-radius:12px;margin-top:12px">' : ""));
+            const shot = document.getElementById("shotImage");
+            if (shot) {
+                shot.onerror = () => {
+                    // Same rule as the album art: no placeholder standing in
+                    // for a picture, a sentence saying what went wrong.
+                    shotUrl = "";
+                    shotError = "The screenshot arrived but this browser would not show it.";
+                    renderScreenshot(document.getElementById("content"));
+                };
+            }
+            paintShotStatus();
+        }
+
+        function paintShotStatus() {
+            const note = document.getElementById("shotStatus");
+            if (!note) return;
+            note.textContent = shotError ||
+                (shotBusy ? "Waiting for the PC — the first one asks for permission there."
+                          : "Taken on request only. The PC may ask you to allow it.");
+        }
+
+        async function takeScreenshot() {
+            if (shotBusy) return;
+            shotBusy = true;
+            shotError = "";
+            renderScreenshot(document.getElementById("content"));
+            try {
+                const resp = await fetch(`${API_BASE}/screenshot`, {headers: getHeaders()});
+                if (!resp.ok) {
+                    let info = {};
+                    try { info = await resp.json(); } catch (e) {}
+                    shotError = info.message || `Screenshot failed (${resp.status})`;
+                } else {
+                    if (shotUrl) URL.revokeObjectURL(shotUrl);
+                    shotUrl = URL.createObjectURL(await resp.blob());
+                }
+            } catch (e) {
+                shotError = "Connection error";
+            } finally {
+                shotBusy = false;
+                renderScreenshot(document.getElementById("content"));
+            }
+        }
+
+        // === Installed app ===
+        // The worker gives the page a home-screen icon and a slot in Android's
+        // share sheet. A share POST carries no headers, so the worker parks the
+        // payload and the page -- which holds the credential -- sends it on.
+        function registerWorker() {
+            if (!("serviceWorker" in navigator)) return;
+            navigator.serviceWorker.register("/sw.js", {scope: "/"}).catch(() => {});
+        }
+
+        async function deliverShare() {
+            const url = new URL(window.location);
+            if (!url.searchParams.get("share")) return;
+            url.searchParams.delete("share");
+            history.replaceState({}, "", url.pathname + (url.searchParams.toString() ? "?" + url.searchParams : "") + url.hash);
+            if (authState !== "ok" || !("caches" in window)) return;
+
+            let cache, meta;
+            try {
+                cache = await caches.open("gnomespeak-share");
+                const stored = await cache.match("/_share/meta");
+                if (!stored) return;
+                meta = await stored.json();
+            } catch (e) { return; }
+
+            let sent = 0;
+            for (const entry of (meta.files || [])) {
+                try {
+                    const hit = await cache.match(entry.key);
+                    if (!hit) continue;
+                    const blob = await hit.blob();
+                    if (await uploadFile(new File([blob], entry.name, {type: blob.type}))) sent++;
+                    await cache.delete(entry.key);
+                } catch (e) { /* the next one may still work */ }
+            }
+            await cache.delete("/_share/meta");
+
+            const text = [meta.url, meta.text].filter(Boolean).join(" ").trim();
+            if (!meta.files || !meta.files.length) {
+                if (!text) return;
+                clipboardDraft = text;
+                navPush("clipboard:");
+                // A shared link goes to the clipboard *and* opens: sharing a
+                // page from the phone means "put this on the big screen", and
+                // making that two taps was the whole gap this closed.
+                await pushClipboard();
+                if (looksLikeLink(text)) await openOnPC(text);
+            } else if (sent) {
+                navPush("files:");
+            }
+        }
+
         // === Startup ===
         // bootstrap() decides whether this browser polls or pairs, so the poll
         // interval is started there rather than unconditionally here: an
@@ -3476,7 +4650,8 @@
         initAuth();
         bindDelegatedHandlers();
         render();
-        bootstrap();
+        bootstrap().then(deliverShare);
+        registerWorker();
     </script>
 </body>
 </html>

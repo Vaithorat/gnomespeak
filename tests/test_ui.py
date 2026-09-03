@@ -230,3 +230,59 @@ def test_touchpad_signature_ignores_unrelated_state(rendered_touchpad):
         line for line in rendered_touchpad.splitlines() if line.startswith("SIGNATURE:")
     ][0]
     assert signature == "SIGNATURE:input:touchpad|no-ext"
+
+
+# --- clipboard history, the health screen, and dictation --------------------
+
+@pytest.fixture(scope="module")
+def rendered_clipboard() -> str:
+    return _render("clipboard")
+
+
+@pytest.fixture(scope="module")
+def rendered_health() -> str:
+    return _render("health")
+
+
+def test_clipboard_history_escapes_what_was_copied(rendered_clipboard):
+    """A clip is whatever was on the PC's clipboard, which is untrusted text."""
+    assert "<img src=x" not in rendered_clipboard
+    assert "&lt;img src=x" in rendered_clipboard
+
+
+def test_clipboard_history_offers_each_clip_by_id(rendered_clipboard):
+    assert 'data-clip="2"' in rendered_clipboard
+    assert 'data-clip="1"' in rendered_clipboard
+
+
+def test_a_shortened_clip_says_so(rendered_clipboard):
+    assert "shortened" in rendered_clipboard
+
+
+def test_the_clipboard_screen_says_where_the_history_lives(rendered_clipboard):
+    """It is memory on the PC, and someone deciding to use it should know."""
+    assert "in memory on the PC only" in rendered_clipboard
+
+
+def test_health_rows_escape_the_machines_own_text(rendered_health):
+    assert "<img src=x" not in rendered_health
+    assert "&lt;img src=x" in rendered_health
+
+
+def test_health_rows_say_what_is_lost_and_what_to_do(rendered_health):
+    assert "without it: windows, typing" in rendered_health
+    assert "fix: run vt install-extension" in rendered_health
+
+
+def test_a_working_check_carries_no_fix(rendered_health):
+    assert "PipeWire available</div>" in rendered_health
+
+
+def test_dictation_is_absent_where_the_browser_cannot_do_it(rendered_touchpad):
+    """No speech recognition in this runtime, so no button that opens nothing."""
+    assert 'id="dictate"' not in rendered_touchpad
+
+
+def test_a_notification_row_can_be_long_pressed_to_mute(rendered_notifications):
+    """The app name has to be on the row for the long-press to know it."""
+    assert 'data-mute="App ' in rendered_notifications

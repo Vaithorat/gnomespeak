@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gnomespeak"
-version = "3.1.0"
+version = "3.4.0"
 description = "Control your Linux PC from your phone: a CLI that reports what is running and serves a minimal web remote."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,9 +25,12 @@ classifiers = [
     "Topic :: System :: Monitoring",
     "Topic :: Multimedia",
 ]
+# Upper bounds as well as lower ones: this is an application people install to
+# expose a desktop, so a major release of either dependency should be tried
+# deliberately rather than arrive under someone on a reinstall.
 dependencies = [
-    "aiohttp>=3.9",
-    "psutil>=5.9",
+    "aiohttp>=3.9,<4",
+    "psutil>=5.9,<8",
 ]
 
 [project.optional-dependencies]
@@ -35,14 +38,21 @@ dependencies = [
 # supported distro ships it as a package (python3-dbus). It is optional here so
 # `pip install` works everywhere; without it, media players, window control,
 # and browser tab enumeration are unavailable and vt says so plainly.
-dbus = ["dbus-python>=1.3"]
-qr = ["qrcode>=7.4"]
+dbus = ["dbus-python>=1.3,<2"]
+qr = ["qrcode>=7.4,<9"]
+# Web Push: the only way to reach a phone whose page is closed. Just the
+# primitives -- the encryption (RFC 8291) and the authorization (RFC 8292) are
+# implemented in vt/push.py, so no push client library is pulled in and no
+# version of `cryptography` is forced on anything else in the environment.
+push = ["cryptography>=41"]
+# Deliberately unbounded: yt-dlp ships fixes for YouTube changes constantly,
+# and an upper bound here would pin users to a version that has stopped working.
 youtube = ["yt-dlp>=2024.1"]
 # Window control on COSMIC (System76's compositor), which has no GNOME-Shell-
 # style extension to install: sources/cosmic_windows.py talks COSMIC's own
 # Wayland protocols directly instead. Unlike dbus-python this is a pure wheel,
 # so it needs no system package and installs the same way everywhere.
-wayland = ["pywayland>=0.4"]
+wayland = ["pywayland>=0.4,<1"]
 # flake8 is here rather than pip-installed by CI alone, so `make lint` runs
 # locally exactly what the build runs.
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "flake8>=7.0"]
@@ -60,7 +70,20 @@ vt = "vt.cli:main"
 include = ["vt*"]
 
 [tool.setuptools.package-data]
-vt = ["ui/*.html", "sources/_cosmic_wayland/*.xml", "sources/_cosmic_wayland/*.xkb"]
+vt = [
+    "ui/*.html", "ui/*.js", "ui/*.png", "ui/*.webmanifest",
+    "sources/_cosmic_wayland/*.xml", "sources/_cosmic_wayland/*.xkb",
+]
+
+# The GNOME extension travels with the wheel, so `pip install gnomespeak`
+# followed by `vt install-extension` works without a checkout. It is data
+# rather than package data because its directory name is a uuid with an "@" in
+# it, and it is the same tree the store submission is built from.
+[tool.setuptools.data-files]
+"share/gnomespeak/gnome-extension/gnomespeak@local" = [
+    "gnome-extension/gnomespeak@local/extension.js",
+    "gnome-extension/gnomespeak@local/metadata.json",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

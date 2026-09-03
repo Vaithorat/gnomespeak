@@ -150,6 +150,89 @@ def _shell_interface():
 
 # --- dispatch ---------------------------------------------------------------
 
+def _execute_system(target_spec: str, action_id: str, value) -> dict:
+    """The system rows, which are several sources wearing one kind."""
+    if target_spec == "audio":
+        return execute_audio_action("@DEFAULT_AUDIO_SINK@", action_id, value)
+    if target_spec == "mic":
+        return execute_audio_action("@DEFAULT_AUDIO_SOURCE@", action_id, value)
+    if target_spec == "wifi":
+        from vt.sources.network import execute as execute_network_action
+        return execute_network_action(target_spec, action_id)
+    from vt.sources.system import execute as execute_system_action
+    return execute_system_action(target_spec, action_id, value)
+
+
+def _execute_disk(target_spec: str, action_id: str) -> dict:
+    from vt.sources.disks import eject
+
+    if action_id != "eject":
+        return {"ok": False, "message": f"Unknown drive action: {action_id}"}
+    return eject(target_spec)
+
+
+def _execute_timer(target_spec: str, action_id: str) -> dict:
+    from vt.schedule import scheduler
+
+    if action_id != "cancel":
+        return {"ok": False, "message": f"Unknown timer action: {action_id}"}
+    return scheduler().cancel(target_spec)
+
+
+def _execute_keypad(target_spec: str, action_id: str) -> dict:
+    """A per-application key pad. The phone sends the name of a key, never a
+    chord: the table decides which keys this application was said to answer."""
+    from vt.sources.keypads import execute as execute_keypad_action
+
+    return execute_keypad_action(target_spec, action_id)
+
+
+def _execute_audio_device(target_spec: str, action_id: str) -> dict:
+    """The output/input device rows: the spec is the direction, and the action
+    carries the wpctl node to switch to."""
+    from vt.sources.audio import execute_device_action
+
+    return execute_device_action(target_spec, action_id)
+
+
+def _execute_bluetooth(target_spec: str, action_id: str) -> dict:
+    from vt.sources.bluetooth import execute as run
+
+    return run(target_spec, action_id)
+
+
+def _execute_workspace(target_spec: str, action_id: str) -> dict:
+    from vt.sources.workspaces import execute as run
+
+    return run(target_spec, action_id)
+
+
+def _execute_streaming(target_spec: str, action_id: str) -> dict:
+    from vt.sources.streaming import execute as run
+
+    return run(target_spec, action_id)
+
+
+# Kinds whose whole dispatch is "hand the spec and the action to one source".
+# A table rather than another branch each, so adding a source does not make
+# this function harder to read -- and the ones that need the value, or need to
+# check the spec first, stay as branches below where that is visible.
+_SIMPLE_KINDS = {
+    "disk": _execute_disk,
+    "timer": _execute_timer,
+    "keys": _execute_keypad,
+    "audio": _execute_audio_device,
+    "bluetooth": _execute_bluetooth,
+    "workspace": _execute_workspace,
+    "streaming": _execute_streaming,
+    "steam": lambda spec, action: execute_steam_action(spec, action),
+    "window": lambda spec, action: execute_window_action(spec, action),
+    "app": lambda spec, action: execute_app_action(spec, action),
+    "launcher": lambda spec, action: execute_launcher_action(spec, action),
+    "youtube": lambda spec, action: execute_youtube_action(spec, action),
+}
+
+
 def execute_action(target_id: str, action_id: str, value: Optional[float] = None) -> dict:
     """Execute an action on a target. Returns {"ok": bool, "message": str}."""
     if ":" not in target_id:
@@ -157,39 +240,22 @@ def execute_action(target_id: str, action_id: str, value: Optional[float] = None
 
     kind, target_spec = target_id.split(":", 1)
 
+    simple = _SIMPLE_KINDS.get(kind)
+    if simple is not None:
+        return simple(target_spec, action_id)
+
     if kind == "system":
-        if target_spec == "audio":
-            return execute_audio_action("@DEFAULT_AUDIO_SINK@", action_id, value)
-        if target_spec == "mic":
-            return execute_audio_action("@DEFAULT_AUDIO_SOURCE@", action_id, value)
-        if target_spec == "wifi":
-            from vt.sources.network import execute as execute_network_action
-            return execute_network_action(target_spec, action_id)
-        from vt.sources.system import execute as execute_system_action
-        return execute_system_action(target_spec, action_id, value)
-    elif kind == "bluetooth":
-        from vt.sources.bluetooth import execute as execute_bluetooth_action
-        return execute_bluetooth_action(target_spec, action_id)
-    elif kind == "workspace":
-        from vt.sources.workspaces import execute as execute_workspace_action
-        return execute_workspace_action(target_spec, action_id)
-    elif kind == "streaming":
-        from vt.sources.streaming import execute as execute_streaming_action
-        return execute_streaming_action(target_spec, action_id)
-    elif kind == "steam":
-        return execute_steam_action(target_spec, action_id)
+        return _execute_system(target_spec, action_id, value)
+    elif kind == "stream":
+        # A per-application stream is a wpctl node like any other; only its id
+        # is user-supplied, so it has to be a number and nothing else.
+        if not target_spec.isdigit():
+            return {"ok": False, "message": f"Invalid stream: {target_spec}"}
+        return execute_audio_action(target_spec, action_id, value)
     elif kind == "mpris":
         return execute_mpris_action(target_spec, action_id, value)
     elif kind == "command":
         return execute_command_action(target_spec)
-    elif kind == "window":
-        return execute_window_action(target_spec, action_id)
-    elif kind == "app":
-        return execute_app_action(target_spec, action_id)
-    elif kind == "launcher":
-        return execute_launcher_action(target_spec, action_id)
-    elif kind == "youtube":
-        return execute_youtube_action(target_spec, action_id)
     return {"ok": False, "message": f"Unknown target kind: {kind}"}
 
 
@@ -284,6 +350,8 @@ def execute_command_action(cmd_id: str) -> dict:
     for cmd in config.get_commands():
         if cmd["id"] != cmd_id:
             continue
+        if cmd.get("steps"):
+            return _run_macro(cmd)
         try:
             subprocess.run(cmd["run"], check=True, capture_output=True, timeout=10)
             return {"ok": True, "message": f"Executed: {cmd['label']}"}
@@ -296,6 +364,33 @@ def execute_command_action(cmd_id: str) -> dict:
         except Exception as e:
             return {"ok": False, "message": f"Error: {e}"}
     return {"ok": False, "message": f"Command not found: {cmd_id}"}
+
+
+def _run_macro(cmd: dict) -> dict:
+    """Run a command's steps in order, stopping at the first that fails.
+
+    Stopping matters: the second half of "mute, then suspend" should not run
+    when the first half did not, and a macro that reported success after doing
+    half of itself would be worse than one that failed.
+    """
+    import time
+
+    done = 0
+    for index, step in enumerate(cmd["steps"], start=1):
+        if "wait" in step:
+            time.sleep(step["wait"])
+            done += 1
+            continue
+        result = execute_action(step["target"], step["action"], step.get("value"))
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "message": (f"{cmd['label']}: step {index} "
+                            f"({step['target']} {step['action']}) failed — "
+                            f"{result.get('message', 'no reason given')}"),
+            }
+        done += 1
+    return {"ok": True, "message": f"{cmd['label']}: {done} step(s) done"}
 
 
 UNKNOWN_METHOD = "org.freedesktop.DBus.Error.UnknownMethod"

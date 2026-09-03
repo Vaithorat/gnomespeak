@@ -49,20 +49,20 @@ Alternatively, if you prefer API tokens:
 1. **Update version** in `pyproject.toml`
    ```toml
    [project]
-   version = "3.1.0"
+   version = "3.4.0"
    ```
 
 2. **Create a git tag**
    ```bash
-   git tag v3.1.0
-   git push origin v3.1.0
+   git tag v3.4.0
+   git push origin v3.4.0
    ```
 
 3. **Create a GitHub release**
    - Go to https://github.com/Vaithorat/gnomespeak/releases
    - Click "Draft a new release"
-   - Tag: select the tag you just created (e.g., `v3.1.0`)
-   - Title: `GnomeSpeak v3.1.0`
+   - Tag: select the tag you just created (e.g., `v3.4.0`)
+   - Title: `GnomeSpeak v3.4.0`
    - Description: Write release notes
    - Click "Publish release"
 
@@ -101,12 +101,12 @@ Check PyPI: https://pypi.org/project/gnomespeak/
 
 Follow [Semantic Versioning](https://semver.org/):
 
-- **MAJOR.MINOR.PATCH** (e.g., `3.1.0`)
+- **MAJOR.MINOR.PATCH** (e.g., `3.4.0`)
 - Increment MAJOR for breaking changes
 - Increment MINOR for new features
 - Increment PATCH for bug fixes
 
-Git tags should match the version: `v3.1.0` (with leading `v`).
+Git tags should match the version: `v3.4.0` (with leading `v`).
 
 ## Troubleshooting
 
@@ -129,10 +129,10 @@ Before publishing to PyPI, test on TestPyPI:
 2. Add to `pyproject.toml`:
    ```toml
    [project]
-   version = "3.1.0rc1"  # Pre-release version
+   version = "3.4.0rc1"  # Pre-release version
    ```
 3. Create a release on GitHub
 4. After it's published to TestPyPI (not PyPI), test:
    ```bash
-   pip install -i https://test.pypi.org/simple/ gnomespeak==3.1.0rc1
+   pip install -i https://test.pypi.org/simple/ gnomespeak==3.4.0rc1
    ```

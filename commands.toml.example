@@ -1,4 +1,4 @@
-# VoiceTalk commands.toml — configure pre-set commands for the remote
+# GnomeSpeak commands.toml — configure pre-set commands for the remote
 
 [[command]]
 id    = "lock"
@@ -32,3 +32,18 @@ run   = ["xdg-open", "https://github.com"]
 # icon  = "🔄"
 # run   = ["systemctl", "restart", "myapp"]
 # confirm = true
+
+# A macro: one button, several things you could have tapped yourself. Steps
+# name a target and an action -- the same pair the phone sends -- or a wait in
+# seconds. They never name a program, so this stays as far from a shell as the
+# rest of this file. The macro stops at the first step that fails.
+[[command]]
+id = "movie_mode"
+label = "Movie mode"
+icon = "🎬"
+steps = [
+  {target = "system:notifications", action = "dnd_on"},
+  {target = "system:display", action = "night_light_on"},
+  {wait = 0.5},
+  {target = "system:audio", action = "volume", value = 0.4},
+]

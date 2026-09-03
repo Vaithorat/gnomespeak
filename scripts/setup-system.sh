@@ -64,6 +64,8 @@ REQUIRED=(
     "dbus-monitor|command -v dbus-monitor|notification mirroring"
     "wireplumber|command -v wpctl|volume control"
     "xdg-user-dirs|command -v xdg-user-dir|finding your Downloads folder"
+    "libnotify|command -v notify-send|banners on the PC when the phone asks for one"
+    "udisks|command -v udisksctl|ejecting a USB drive from the phone"
 )
 
 # Both clipboard tools go in regardless of session type -- they are tiny, and it
@@ -105,24 +107,32 @@ pkg_for() {
         debian:gi)            echo "python3-gi" ;;
         debian:dbus-monitor)  echo "dbus-bin" ;;
         debian:wireplumber)   echo "wireplumber" ;;
+        debian:libnotify)     echo "libnotify-bin" ;;
+        debian:udisks)        echo "udisks2" ;;
         debian:*)             echo "$1" ;;
 
         fedora:venv)          echo "" ;;
         fedora:dbus)          echo "python3-dbus" ;;
         fedora:gi)            echo "python3-gobject" ;;
         fedora:dbus-monitor)  echo "dbus-tools" ;;
+        fedora:libnotify)     echo "libnotify" ;;
+        fedora:udisks)        echo "udisks2" ;;
         fedora:*)             echo "$1" ;;
 
         arch:venv)            echo "" ;;
         arch:dbus)            echo "python-dbus" ;;
         arch:gi)              echo "python-gobject" ;;
         arch:dbus-monitor)    echo "dbus" ;;
+        arch:libnotify)       echo "libnotify" ;;
+        arch:udisks)          echo "udisks2" ;;
         arch:*)               echo "$1" ;;
 
         suse:venv)            echo "" ;;
         suse:dbus)            echo "python3-dbus-python" ;;
         suse:gi)              echo "python3-gobject" ;;
         suse:dbus-monitor)    echo "dbus-1-tools" ;;
+        suse:libnotify)       echo "libnotify-tools" ;;
+        suse:udisks)          echo "udisks2" ;;
         suse:*)               echo "$1" ;;
 
         *) echo "" ;;

@@ -26,6 +26,81 @@ CODE_TTL = 600.0
 
 DEVICE_SECRET_BYTES = 32
 MAX_DEVICES = 32
+
+# What a paired device is allowed to do. "full" is every phone that has ever
+# paired until now and stays the default; "guest" exists for the phone that is
+# not yours -- a visitor who should be able to change the music and nothing
+# else. The names are capabilities rather than endpoints, so a new endpoint
+# joins an existing bucket instead of quietly being allowed.
+CAPABILITIES = (
+    "media",       # players, volume, per-app volume, output device
+    "apps",        # windows, workspaces, launching, quitting, configured commands
+    "system",      # brightness, night light, theme, do-not-disturb, timers
+    "power",       # lock, suspend, restart, shut down
+    "input",       # pointer, typing, key chords
+    "files",       # uploads, downloads, opening a file on the PC
+    "clipboard",   # reading and writing the PC's clipboard
+    "notifications",  # reading the PC's notifications, dismissing, muting
+    "open",        # opening a link on the PC
+    "screenshot",  # taking one
+    "admin",       # pairing, revoking, the audit log
+)
+
+SCOPES = {
+    "full": set(CAPABILITIES),
+    "guest": {"media"},
+}
+DEFAULT_SCOPE = "full"
+
+# Which capability a target belongs to. Matched on the id's kind, then on the
+# specific system rows, because "turn the volume down" and "shut the machine
+# down" are both system: targets and must not be the same permission.
+_KIND_CAPABILITY = {
+    "player": "media",
+    "youtube_player": "media",
+    "youtube": "media",
+    "stream": "media",
+    "audio": "media",
+    "streaming": "media",
+    "window": "apps",
+    "workspace": "apps",
+    "app": "apps",
+    "launcher": "apps",
+    "command": "apps",
+    "keys": "input",
+    "bluetooth": "system",
+    "timer": "system",
+    "network": "system",
+}
+_SYSTEM_CAPABILITY = {
+    "audio": "media",
+    "mic": "media",
+    "power": "power",
+}
+
+
+def scope_name(scope: str) -> str:
+    """A known scope name, defaulting to full for anything unrecognised."""
+    return scope if scope in SCOPES else DEFAULT_SCOPE
+
+
+def scope_allows(scope: str, capability: str) -> bool:
+    return capability in SCOPES.get(scope_name(scope), SCOPES[DEFAULT_SCOPE])
+
+
+def capability_for(target_id: str) -> str:
+    """The capability a target's actions belong to.
+
+    An unknown kind maps to "apps" rather than to nothing: a new target type
+    should be refused for a guest until someone decides otherwise, not allowed
+    by omission.
+    """
+    kind, _, spec = str(target_id or "").partition(":")
+    if kind == "system":
+        return _SYSTEM_CAPABILITY.get(spec, "system")
+    return _KIND_CAPABILITY.get(kind, "apps")
+
+
 MAX_NAME_LENGTH = 48
 
 # A rejected credential is never a typo the user will fix by retrying, so the
@@ -136,9 +211,14 @@ class DeviceStore:
             f.write(payload)
         os.replace(tmp, self.path)
 
-    def register(self, name: str) -> tuple:
+    def register(self, name: str, scope: str = DEFAULT_SCOPE,
+                 expires_in: float = 0.0) -> tuple:
         """Create a device and return (device_id, secret). The secret is
-        returned once and never stored in recoverable form."""
+        returned once and never stored in recoverable form.
+
+        `expires_in` of 0 means the credential lasts until it is revoked, which
+        is what every phone paired before scopes existed has.
+        """
         if len(self._devices) >= MAX_DEVICES:
             raise AuthError(f"device limit reached ({MAX_DEVICES}); revoke one first")
         device_id = secrets.token_hex(8)
@@ -150,6 +230,8 @@ class DeviceStore:
             "created": time.time(),
             "last_seen": 0.0,
             "last_ip": "",
+            "scope": scope_name(scope),
+            "expires": time.time() + float(expires_in) if expires_in else 0.0,
         }
         self._save()
         return device_id, secret
@@ -162,6 +244,17 @@ class DeviceStore:
             secrets.compare_digest(supplied, _DUMMY_HASH)
             return None
         if not secrets.compare_digest(supplied, str(entry.get("secret_hash", ""))):
+            return None
+        expires = float(entry.get("expires") or 0)
+        if expires and expires < time.time():
+            # A guest credential that ran out. Dropping it here rather than
+            # merely refusing it means the phone disappears from `vt devices`
+            # too, which is where someone goes to check.
+            self._devices.pop(entry["id"], None)
+            try:
+                self._save()
+            except OSError:
+                pass
             return None
         return entry
 
@@ -206,6 +299,8 @@ class DeviceStore:
                 "created": entry.get("created", 0.0),
                 "last_seen": entry.get("last_seen", 0.0),
                 "last_ip": entry.get("last_ip", ""),
+                "scope": scope_name(str(entry.get("scope") or DEFAULT_SCOPE)),
+                "expires": float(entry.get("expires") or 0.0),
             })
         out.sort(key=lambda d: d["created"])
         return out
@@ -247,12 +342,48 @@ class PairingCodes:
             json.dump({"version": 1, "codes": codes}, f)
         os.replace(tmp, self.path)
 
-    def issue(self, label: str = "") -> str:
+    def issue(self, label: str = "", scope: str = DEFAULT_SCOPE,
+              device_ttl: float = 0.0) -> str:
+        """Mint a code. It carries the scope and lifetime the device will get.
+
+        The terms are fixed when the code is issued rather than when it is
+        redeemed, because the person deciding "this is a visitor's phone" is
+        the one at the keyboard running `vt pair`, not the one holding it.
+        """
         codes = self._read()
         code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
-        codes[code] = {"expires": time.time() + self.ttl, "label": label}
+        codes[code] = {
+            "expires": time.time() + self.ttl,
+            "label": label,
+            "scope": scope_name(scope),
+            "device_ttl": float(device_ttl or 0.0),
+        }
         self._write(codes)
         return code
+
+    def redeem_terms(self, text: str) -> Optional[dict]:
+        """Consume a code and return what it grants, or None.
+
+        {"scope", "device_ttl", "label"}. Separate from `redeem` so that older
+        callers keep their boolean and nothing has to change to stay correct.
+        """
+        supplied = normalize_code(text)
+        if len(supplied) != CODE_LENGTH:
+            return None
+        codes = self._read()
+        matched = None
+        for known in codes:
+            if secrets.compare_digest(known, supplied):
+                matched = known
+        if matched is None:
+            return None
+        meta = codes.pop(matched)
+        self._write(codes)
+        return {
+            "scope": scope_name(str(meta.get("scope") or DEFAULT_SCOPE)),
+            "device_ttl": float(meta.get("device_ttl") or 0.0),
+            "label": meta.get("label", ""),
+        }
 
     def redeem(self, text: str) -> bool:
         """Consume a code. False if unknown or expired; a code works once."""
@@ -275,7 +406,9 @@ class PairingCodes:
 
     def active(self) -> list:
         return [
-            {"code": code, "expires": meta["expires"], "label": meta.get("label", "")}
+            {"code": code, "expires": meta["expires"], "label": meta.get("label", ""),
+             "scope": scope_name(str(meta.get("scope") or DEFAULT_SCOPE)),
+             "device_ttl": float(meta.get("device_ttl") or 0.0)}
             for code, meta in sorted(self._read().items(), key=lambda kv: kv[1]["expires"])
         ]
 

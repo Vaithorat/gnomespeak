@@ -317,10 +317,37 @@ AUTH = {"X-VT-Token": "test-token"}
     ("post", "/api/upload"),
     ("get", "/api/files/anything.txt"),
     ("post", "/api/files/open"),
+    ("post", "/api/notifications/dismiss"),
+    ("get", "/api/screenshot"),
+    ("get", "/api/art"),
+    ("get", "/api/audit"),
+    ("post", "/api/ws-ticket"),
+    ("get", "/ws"),
 ])
 async def test_remote_endpoints_require_a_credential(client, method, path):
     resp = await getattr(client, method)(path)
     assert resp.status == 401
+
+
+async def test_every_api_route_is_in_the_auth_matrix(client):
+    """A new endpoint that nobody added here is a new endpoint nobody checked."""
+    covered = {"/api/session", "/api/pair", "/api/pair/self", "/api/devices",
+               "/api/devices/revoke", "/api/state", "/api/apps", "/api/youtube",
+               "/api/youtube/related", "/api/clipboard", "/api/input",
+               "/api/notifications", "/api/notifications/dismiss", "/api/files",
+               "/api/upload", "/api/files/open", "/api/files/{name}", "/api/do",
+               "/api/ws-ticket", "/api/screenshot", "/api/art", "/api/audit",
+               "/api/probe", "/api/open", "/api/clipboard/history", "/api/files/wallpaper", "/api/wake",
+               "/api/notifications/mute", "/api/push/key", "/api/push/subscribe",
+               "/api/push/unsubscribe",
+               "/api/diagnostics", "/ws"}
+    routes = {
+        r.resource.canonical for r in client.vt.make_app().router.routes()
+        if r.resource is not None and (
+            r.resource.canonical.startswith("/api/") or r.resource.canonical == "/ws"
+        )
+    }
+    assert routes <= covered, f"not in the auth matrix: {sorted(routes - covered)}"
 
 
 async def test_clipboard_read(client, monkeypatch):
@@ -438,6 +465,11 @@ async def test_notifications_report_why_they_are_empty(client, monkeypatch):
     class FakeMirror:
         error = "dbus-monitor is not installed"
         running = False
+        # The real mirror carries the push callback the server sets on it.
+        on_entry = None
+
+        def muted(self):
+            return []
 
         def start(self):
             return False

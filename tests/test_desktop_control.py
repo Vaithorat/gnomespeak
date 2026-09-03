@@ -257,17 +257,25 @@ def test_a_machine_without_a_battery_reports_nothing(monkeypatch):
     assert system.battery_summary() == ""
 
 
+def _settings(monkeypatch, banners=None, night_light=None, dark=None):
+    """Pin the three desktop settings the snapshot reads in one batch.
+
+    They are read together because three `gsettings get` processes waiting one
+    after another cost a fifth of the live channel's whole latency budget.
+    """
+    monkeypatch.setattr(
+        system, "_desktop_settings", lambda: (banners, night_light, dark)
+    )
+
+
 def test_do_not_disturb_offers_the_half_that_applies(monkeypatch):
     monkeypatch.setattr(system, "battery_summary", lambda: "")
     monkeypatch.setattr(system, "_brightness", lambda: -1)
-    monkeypatch.setattr(system, "_night_light_on", lambda: None)
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
-
-    monkeypatch.setattr(system, "_banners_shown", lambda: True)
+    _settings(monkeypatch, banners=True)
     targets = {t.id: t for t in system.get_system_targets()}
     assert [a.id for a in targets["system:notifications"].actions] == ["dnd_on"]
 
-    monkeypatch.setattr(system, "_banners_shown", lambda: False)
+    _settings(monkeypatch, banners=False)
     targets = {t.id: t for t in system.get_system_targets()}
     assert [a.id for a in targets["system:notifications"].actions] == ["dnd_off"]
 
@@ -275,21 +283,18 @@ def test_do_not_disturb_offers_the_half_that_applies(monkeypatch):
 def test_no_backlight_means_no_display_row(monkeypatch):
     """A desktop monitor has no controllable backlight; a dead slider is worse."""
     monkeypatch.setattr(system, "battery_summary", lambda: "")
-    monkeypatch.setattr(system, "_banners_shown", lambda: None)
     monkeypatch.setattr(system, "_brightness", lambda: -1)
-    monkeypatch.setattr(system, "_night_light_on", lambda: None)
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
+    _settings(monkeypatch)
 
-    assert [t.id for t in system.get_system_targets()] == ["system:power"]
+    # Ring needs no hardware, so it stays; the display row is the one that goes.
+    assert [t.id for t in system.get_system_targets()] == ["system:power", "system:ring"]
 
 
 def test_shutdown_and_restart_require_confirmation(monkeypatch):
     """A mis-heard word must not be able to take the machine down."""
     monkeypatch.setattr(system, "battery_summary", lambda: "")
     monkeypatch.setattr(system, "_brightness", lambda: -1)
-    monkeypatch.setattr(system, "_banners_shown", lambda: None)
-    monkeypatch.setattr(system, "_night_light_on", lambda: None)
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
+    _settings(monkeypatch)
 
     power = system.get_system_targets()[0]
     kinds = {a.id: a.kind for a in power.actions}
@@ -315,10 +320,8 @@ def test_unknown_system_target_is_named():
 def test_night_light_row_appears_without_a_backlight(monkeypatch):
     """A desktop monitor has no backlight, but can still have night light."""
     monkeypatch.setattr(system, "battery_summary", lambda: "")
-    monkeypatch.setattr(system, "_banners_shown", lambda: None)
     monkeypatch.setattr(system, "_brightness", lambda: -1)
-    monkeypatch.setattr(system, "_night_light_on", lambda: False)
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
+    _settings(monkeypatch, night_light=False)
 
     targets = {t.id: t for t in system.get_system_targets()}
     display = targets["system:display"]
@@ -328,11 +331,8 @@ def test_night_light_row_appears_without_a_backlight(monkeypatch):
 
 def test_night_light_action_flips_with_state(monkeypatch):
     monkeypatch.setattr(system, "battery_summary", lambda: "")
-    monkeypatch.setattr(system, "_banners_shown", lambda: None)
     monkeypatch.setattr(system, "_brightness", lambda: -1)
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: None)
-
-    monkeypatch.setattr(system, "_night_light_on", lambda: True)
+    _settings(monkeypatch, night_light=True)
     targets = {t.id: t for t in system.get_system_targets()}
     assert [a.id for a in targets["system:display"].actions] == ["night_light_off"]
     assert targets["system:display"].status == "night light"
@@ -342,16 +342,14 @@ def test_night_light_action_flips_with_state(monkeypatch):
 
 def test_theme_row_offers_the_opposite_mode(monkeypatch):
     monkeypatch.setattr(system, "battery_summary", lambda: "")
-    monkeypatch.setattr(system, "_banners_shown", lambda: None)
     monkeypatch.setattr(system, "_brightness", lambda: -1)
-    monkeypatch.setattr(system, "_night_light_on", lambda: None)
 
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: True)
+    _settings(monkeypatch, dark=True)
     targets = {t.id: t for t in system.get_system_targets()}
     assert [a.id for a in targets["system:display"].actions] == ["theme_light"]
     assert targets["system:display"].status == "dark"
 
-    monkeypatch.setattr(system, "_theme_is_dark", lambda: False)
+    _settings(monkeypatch, dark=False)
     targets = {t.id: t for t in system.get_system_targets()}
     assert [a.id for a in targets["system:display"].actions] == ["theme_dark"]
     assert targets["system:display"].status == "light"
@@ -595,6 +593,7 @@ def test_wifi_off_shows_a_turn_on_action(monkeypatch):
 def test_wifi_on_without_connectivity_is_not_connected(monkeypatch):
     monkeypatch.setattr(network, "_properties",
                         lambda: {"WirelessEnabled": True, "Connectivity": 2})
+    monkeypatch.setattr(network, "saved_networks", lambda force=False: [])
     targets = network.get_network_targets()
     assert [a.id for a in targets[0].actions] == ["wifi_off"]
     assert targets[0].status == "on"
@@ -603,8 +602,19 @@ def test_wifi_on_without_connectivity_is_not_connected(monkeypatch):
 def test_wifi_full_connectivity_is_reported_connected(monkeypatch):
     monkeypatch.setattr(network, "_properties",
                         lambda: {"WirelessEnabled": True, "Connectivity": 4})
+    monkeypatch.setattr(network, "saved_networks", lambda force=False: [])
     targets = network.get_network_targets()
     assert targets[0].status == "connected"
+
+
+def test_wifi_shows_the_network_it_is_on(monkeypatch):
+    """The name is what someone is checking for; "connected" says less."""
+    monkeypatch.setattr(network, "_properties",
+                        lambda: {"WirelessEnabled": True, "Connectivity": 4})
+    monkeypatch.setattr(network, "saved_networks",
+                        lambda force=False: [{"name": "4A", "active": True}])
+    targets = network.get_network_targets()
+    assert targets[0].status == "4A"
 
 
 class _FakeNMProps:

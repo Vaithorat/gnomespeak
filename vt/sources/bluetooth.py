@@ -81,6 +81,25 @@ def _set_powered(path: str, on: bool) -> dict:
         return {"ok": False, "message": f"Bluetooth error: {e}"}
 
 
+BATTERY_IFACE = "org.bluez.Battery1"
+
+
+def _battery_percent(interfaces: dict):
+    """A connected device's own battery level, or None when it reports none.
+
+    Only headsets, mice and keyboards that implement the battery service have
+    this, which is why its absence is a missing word rather than a missing row.
+    """
+    props = interfaces.get(BATTERY_IFACE)
+    if not props:
+        return None
+    try:
+        value = int(props.get("Percentage"))
+    except (TypeError, ValueError):
+        return None
+    return value if 0 <= value <= 100 else None
+
+
 def get_bluetooth_targets() -> list[Target]:
     """The adapter, plus one target per paired device while the radio is on."""
     objects = _managed_objects()
@@ -122,13 +141,19 @@ def get_bluetooth_targets() -> list[Target]:
         if not props or not props.get("Paired"):
             continue
         connected = bool(props.get("Connected", False))
+        # BlueZ publishes the device's own battery on the same object, so it
+        # costs nothing to read -- and "why did my headphones die" is the
+        # question the desktop's own menu answers worst.
+        battery = _battery_percent(interfaces)
+        subtitle = str(props.get("Address") or "")
         devices.append(Target(
             id=f"bluetooth:{dev_path}",
             kind="bluetooth",
             title=_device_label(props),
-            subtitle=str(props.get("Address") or ""),
+            subtitle=subtitle,
             icon=_ICONS.get(str(props.get("Icon") or ""), "🔷"),
-            status="connected" if connected else "paired",
+            status=(f"connected · {battery}%" if battery is not None
+                    else ("connected" if connected else "paired")),
             actions=[
                 Action(id="disconnect", label="Disconnect")
                 if connected
