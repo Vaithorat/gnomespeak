@@ -166,12 +166,12 @@ def _join(action_id: str) -> dict:
 
 def execute(target_spec: str, action_id: str) -> dict:
     """Run one network action. `target_spec` is always "wifi" for now."""
-    if dbus is None:
-        return {"ok": False, "message": "python-dbus is not importable; Wi-Fi control is unavailable"}
     if target_spec != "wifi":
         return {"ok": False, "message": f"Unknown network target: {target_spec}"}
     if action_id.startswith("join_"):
         return _join(action_id)
+    if dbus is None:
+        return {"ok": False, "message": "python-dbus is not importable; Wi-Fi control is unavailable"}
     if action_id not in ("wifi_on", "wifi_off"):
         return {"ok": False, "message": f"Unknown network action: {action_id}"}
 
