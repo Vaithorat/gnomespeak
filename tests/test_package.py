@@ -6,8 +6,11 @@ same extension, and the point of these tests is that neither is privileged:
 """
 
 import json
+import tomllib
 import zipfile
+from pathlib import Path
 
+from vt import __version__
 from vt import package, shell
 
 
@@ -72,6 +75,13 @@ def test_a_missing_source_is_a_message_not_a_traceback(tmp_path):
 def test_the_checkouts_own_metadata_would_be_accepted():
     metadata = json.loads((package.source_dir() / "metadata.json").read_text())
     assert package.metadata_problems(metadata) == []
+
+
+def test_the_distribution_cli_and_extension_report_the_same_version():
+    root = Path(__file__).resolve().parent.parent
+    project = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+    metadata = json.loads((package.source_dir() / "metadata.json").read_text())
+    assert project["version"] == metadata["version-name"] == __version__
 
 
 def test_a_store_install_counts_as_installed(tmp_path):

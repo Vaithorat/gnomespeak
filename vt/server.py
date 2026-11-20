@@ -492,7 +492,7 @@ class VoiceTalkServer:
 
         snapshot = self._snapshot_cache
         kept = [t for t in snapshot.targets
-                if not any(t.id.startswith(prefix) for prefix in prefixes)]
+                if not t.id.startswith(("phone:", *prefixes))]
         merged = Snapshot(targets=kept + targets, ts=time.time())
         # Sorted the same way a full collection is, so the phone is not handed
         # a different order for a moment.
@@ -636,6 +636,11 @@ class VoiceTalkServer:
         if not path.exists():
             raise web.HTTPNotFound()
         content_type, cache = STATIC_ASSETS[name]
+        policy = "default-src 'none'; frame-ancestors 'none'"
+        if name == "sw.js":
+            # The worker has its own CSP. It must fetch same-origin assets to
+            # finish installing and fetch page navigations for the offline cache.
+            policy += "; connect-src 'self'"
         return web.Response(
             body=path.read_bytes(),
             content_type=content_type,
@@ -643,7 +648,7 @@ class VoiceTalkServer:
                 "Cache-Control": cache,
                 # The worker controls the whole origin, not just /ui.
                 "Service-Worker-Allowed": "/",
-                "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+                "Content-Security-Policy": policy,
             },
         )
 

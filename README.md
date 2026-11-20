@@ -1,19 +1,20 @@
 # GnomeSpeak — Linux CLI + Web Remote
 
 [![CI](https://github.com/Vaithorat/gnomespeak/actions/workflows/ci.yml/badge.svg)](https://github.com/Vaithorat/gnomespeak/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/Vaithorat/gnomespeak)](https://github.com/Vaithorat/gnomespeak/releases/latest)
 [![PyPI](https://img.shields.io/pypi/v/gnomespeak)](https://pypi.org/project/gnomespeak/)
 [![Python](https://img.shields.io/pypi/pyversions/gnomespeak)](https://pypi.org/project/gnomespeak/)
 [![License: MIT](https://img.shields.io/github/license/Vaithorat/gnomespeak)](LICENSE)
 
 **The remote for your Linux desktop that needs nothing installed on the phone and works from outside the house — because it sends state, not screens.**
 
-Open a URL in any phone browser and you get a live model of what the PC is doing: what is playing, what is open, what apps are running, what the volume and battery are — each one a target with concrete actions, one tap each. Kilobytes per update rather than megabits, so it still works on mobile data in a lift. No app to install, no voice, no AI guessing.
+Open a URL in your phone browser to see and control what is playing, what is open, and how your PC is doing. It sends small state updates instead of a video stream. No native phone app or voice commands required.
 
 ## Features
 
-- **Live channel over WebSocket** — Sub-300ms state updates (`GET /ws`) with JSON diff patches. Transmits only changed targets; an idle PC uses virtually zero network traffic. Falls back automatically to 1 Hz HTTP polling.
+- **Live channel over WebSocket** — Pushes changed targets instead of repeating full snapshots (`GET /ws`). Reconnects automatically and falls back to 1 Hz HTTP polling when needed.
 - **Starts with the desktop session** — `vt install-service` installs a systemd *user* service bound to `graphical-session.target`. Starts automatically on login, uninstalls cleanly with `vt uninstall-service`.
-- **Installable web app (PWA) & share target** — Add to home screen from Chrome on Android for a fullscreen standalone app with quick actions. Share photos or links directly from Android's share sheet to your PC.
+- **Installable web app (PWA) & share target** — On Android Chrome, open the paired HTTPS URL and choose **Install app** for a standalone app with quick actions. The installed app registers to receive photos and links from the Android share sheet. Use a stable HTTPS URL so the installed app and pairing keep working after a restart.
 - **Web Push notifications** — Receive notifications on your phone even when the browser tab is closed via RFC 8291 payload encryption and RFC 8292 VAPID auth (`pip install gnomespeak[push]`).
 - **Real-time state display** — See MPRIS players with album art and live position scrubbers, open windows, individual Firefox tabs, workspaces, running apps, streaming shortcuts, Bluetooth devices, and system status.
 - **Per-app volume & device switching** — Control individual application stream volumes and mute independently via PipeWire (`wpctl`). Switch audio output (sinks) and input (sources) between headphones, speakers, and mics.
@@ -29,7 +30,7 @@ Open a URL in any phone browser and you get a live model of what the PC is doing
 - **Open links & set wallpaper** — Open any link sent from your phone in the PC browser with one tap. Set any transferred image as your desktop background (light and dark themes).
 - **Launch installed apps & Steam games** — Search and launch any desktop app (`.desktop` entry) or installed Steam game.
 - **YouTube search, playback & Up Next** — Search YouTube, tap to play in browser with autoplay policy detection and fix, control playback (play/pause, seek, volume, fullscreen, close tab), and view related "Up next" videos.
-- **Window and workspace control** — Focus, minimize, maximize, move windows across workspaces, and switch workspaces (GNOME Shell extension or COSMIC Wayland protocols).
+- **Window and workspace control** — Focus, close, minimize and maximize on GNOME and COSMIC. Switching workspaces and moving windows between them require the GNOME extension.
 - **Notification mirroring, dismiss & mute** — Mirror desktop notifications to the phone, dismiss them remotely, or mute notifications from noisy apps for the session.
 - **Guest pairing & scopes** — Pair devices with restricted permissions (e.g. `--guest` for media controls only) and auto-expiring access (`--hours N`).
 - **LAN HTTPS / TLS** — Encrypt local Wi-Fi traffic with self-signed TLS certificates (`vt serve --tls`). Off-LAN traffic is encrypted by Cloudflare Tunnel.
@@ -54,7 +55,7 @@ Open a URL in any phone browser and you get a live model of what the PC is doing
 curl -fsSL https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/run.sh | bash
 ```
 
-This verifies system dependencies, installs GnomeSpeak and the GNOME extension, and immediately launches `vt serve` with the pairing QR code and URL.
+This installs GnomeSpeak and the GNOME extension if `vt` is missing, then launches `vt serve`. If an older `vt` is already installed, run the standalone installer below to upgrade it first.
 
 To install and run it as an autostarting background service instead:
 
@@ -73,13 +74,13 @@ This script:
 - Installs the system dependencies it finds missing, asking for sudo only then
   (`python3-dbus`, `python3-gi`, `wl-clipboard`, `xclip`, `dbus-bin`,
   `wireplumber`, `xdg-user-dirs`, `libnotify`, `udisks2`)
-- Installs GnomeSpeak from PyPI (or latest from GitHub if not yet published)
+- Installs or upgrades GnomeSpeak with the QR, YouTube, and Web Push extras from PyPI, falling back to GitHub if the PyPI install fails
 - Installs the GNOME extension so window and touchpad control work
 - Optionally starts the server (`--serve`) or installs the service (`--service`)
 
-Nothing here is fatal. A distro it does not recognise, a machine with no sudo,
-or one that is not running GNOME still ends up with a server it can start —
-just with fewer features, each of which says so in `vt doctor` and on the phone.
+If optional system dependencies cannot be installed, `vt doctor` reports the
+affected features. The [GitHub release](https://github.com/Vaithorat/gnomespeak/releases/latest)
+also supplies a wheel and source archive.
 
 **After installation:**
 
@@ -88,7 +89,7 @@ just with fewer features, each of which says so in `vt doctor` and on the phone.
    vt doctor
    ```
 
-   All lines should be ✓ (or ℹ for optional features). If D-Bus or wpctl fail, your system cannot run GnomeSpeak.
+   Missing D-Bus or `wpctl` limits media or audio features, but does not prevent the server from running.
 
 2. **Log out and back in**
 
@@ -152,7 +153,8 @@ For development or to work on the code:
    `make dev` is the only start command you need. It sets the environment up if
    it isn't already, then runs the server through `venv/bin/vt` by absolute
    path — so it behaves identically from a VS Code terminal, a plain shell, or
-   any other directory. A Cloudflare tunnel is started by default.
+   any other directory. It tries a Cloudflare Quick Tunnel by default. After
+   setup, run `venv/bin/vt serve` instead for LAN-only access.
 
    Output:
    ```
@@ -170,8 +172,9 @@ For development or to work on the code:
    ```
 
 2. **Open the URL on your phone** (or scan the QR code)
-   - From the LAN: the token is stored in `localStorage`, bookmark works.
-   - From anywhere: enter the pairing code shown at startup.
+   - **LAN QR:** for the same network as the PC. The browser stores the token for that address.
+   - **Tunnel QR:** for access from anywhere. Use the pairing link or code for the HTTPS address.
+   - Quick Tunnel URLs change when restarted. For a permanent bookmark, PWA, or off-LAN service, configure a named Cloudflare Tunnel and use `vt install-service --tunnel-name NAME`, then `vt pair --url https://YOUR-HOSTNAME`.
 
 3. **Control your PC**
    - Select a target (media player, window, app, command)
@@ -182,7 +185,7 @@ For development or to work on the code:
 
 | Command | Purpose |
 |---------|---------|
-| `vt serve [--host IP] [--port 8765] [--no-token] [--open] [--tunnel]` | Start the HTTP server. Default: LAN IP with Cloudflare tunnel. `--tunnel` enables a quick tunnel for global access. `--no-token` disables token auth. `--open` opens in browser. |
+| `vt serve [--host IP] [--port 8765] [--open] [--tunnel] [--tunnel-name NAME]` | Start on the LAN by default. Use `--tunnel` for a temporary HTTPS hostname or `--tunnel-name NAME` with a configured Cloudflare Tunnel for a stable hostname. `--open` opens the UI in a browser. |
 | `vt pair [--url URL] [--port PORT] [--minutes N] [--guest] [--hours N]` | Issue a one-time pairing code for a new device. Prints a link and QR code. `--guest` limits the phone to media (no power, input, files, clipboard or pairing); `--hours` makes its access end by itself. |
 | `vt devices [--revoke ID] [--revoke-all]` | List paired devices or revoke access. |
 | `vt audit [-n N] [--rejects]` | Show recent security log entries. |
@@ -197,8 +200,8 @@ For development or to work on the code:
 | `vt wake <mac> [--broadcast ADDR] [--port N]` | Send a wake-on-LAN packet to another machine. Nothing acknowledges one, so it reports "sent", never "woken". |
 | `vt doctor` | Run preflight checks. |
 | `vt install-extension` | Install the GNOME Shell extension (windows, workspaces, pointer, typing). Cleans up a pre-rename `voicetalk@local` install and enables the new one for the next login. |
-| `vt package-extension [--uuid UUID] [--out DIR]` | Build the zip to upload to [extensions.gnome.org](https://extensions.gnome.org/upload/). The archive carries the store uuid (`gnomespeak@vaithorat.github.io`) while the checkout keeps `gnomespeak@local`; both are recognised by `vt doctor` and by the server. Bump `version` in `gnome-extension/*/metadata.json` before each resubmission. |
-| `vt install-service [--port N] [--tunnel-name NAME] [--no-start]` | Start the server with your desktop session, as a systemd *user* unit. Requires pairing (a service's banner reaches nobody), so get in with `vt pair`. Logs: `journalctl --user -u gnomespeak -f`. |
+| `vt package-extension [--uuid UUID] [--out DIR]` | Build a standalone extension ZIP. Normal installs use `vt install-extension`; there is no GNOME Extensions store listing. |
+| `vt install-service [--host IP] [--port N] [--tunnel-name NAME] [--no-start]` | Start the server when you log into the desktop, as a systemd *user* unit. Pair with `vt pair`; for a named tunnel use `vt pair --url https://YOUR-HOSTNAME`. This is not a pre-login system service. Logs: `journalctl --user -u gnomespeak -f`. |
 | `vt uninstall-service` | Stop, disable and remove that unit. |
 
 ## HTTP API
@@ -397,7 +400,7 @@ steps = [
   - **Open & Wallpaper** (`sources/open_url.py`, `sources/wallpaper.py`) — Open URL in browser and set background image
   - **Wake-on-LAN** (`sources/wake.py`) — Broadcast magic packets across the local subnet
 - **Actions** — Derived from capabilities (CanPlay, CanPause, CanSeek, etc.) so unsupported actions don't appear.
-- **State refresh** — Live WebSocket channel pushes diff patches under 300ms (`vt/live.py`). 1 Hz background task caches snapshots for `/api/state` poll fallback. Concurrent subprocess collection (`vt/procs.py`) completes snapshots in ~75ms.
+- **State refresh** — The live channel pushes patches (`vt/live.py`) after actions and background changes. A 1 Hz background task keeps snapshots fresh for the `/api/state` fallback. See [release verification notes](PENDING.md) for measured latency and remaining device checks.
 
 ## Limitations
 
@@ -522,7 +525,7 @@ because the URL is not a credential off-network.
 ```
 gnomespeak/
 ├── vt/
-│   ├── __init__.py             # Version (3.4.0)
+│   ├── __init__.py             # CLI version
 │   ├── cli.py                  # CLI entry point (serve, pair, devices, status, do, ...)
 │   ├── model.py                # Target/Action dataclasses
 │   ├── state.py                # Snapshot assembly
@@ -575,7 +578,7 @@ gnomespeak/
 │   │   ├── manifest.webmanifest# PWA web manifest with app shortcuts
 │   │   └── *.png               # PWA icons (192, 512, maskable, apple-touch)
 ├── gnome-extension/gnomespeak@local/
-│   ├── metadata.json           # Extension metadata (v4 / 3.4.0)
+│   ├── metadata.json           # Extension metadata
 │   ├── extension.js            # D-Bus window, workspace, pointer & key interface
 ├── Makefile                    # make dev / setup / test / doctor
 ├── scripts/envreport.py        # backs `make env`

@@ -152,6 +152,55 @@ def test_the_installer_asks_for_the_extras_a_phone_remote_needs():
     assert "gnomespeak[qr,youtube,push]" in INSTALL_SCRIPT.read_text()
 
 
+@pytest.mark.parametrize(
+    "managed,pipx,stdin", [(False, False, False), (True, False, False), (True, True, False), (False, False, True)]
+)
+def test_the_installer_retains_extras_when_pypi_is_unavailable(tmp_path, managed, pipx, stdin):
+    installer = tmp_path / "install.sh"
+    shutil.copyfile(INSTALL_SCRIPT, installer)
+    (tmp_path / "scripts").mkdir()
+    setup = tmp_path / "scripts" / "setup-system.sh"
+    setup.write_text("#!/bin/sh\nexit 0\n")
+    setup.chmod(0o755)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "dirname").symlink_to(shutil.which("dirname"))
+    (bin_dir / "bash").symlink_to(BASH)
+    curl = bin_dir / "curl"
+    curl.write_text("#!/bin/sh\ncase \"$2\" in */scripts/setup-system.sh) echo 'echo ran-setup-helper';; *) exit 1;; esac\n")
+    python = bin_dir / "python3"
+    pip_install = """#!/bin/sh
+[ "$1" != "-" ] || exit "$MANAGED_STATUS"
+printf '%s\\n' "$@"
+for arg; do last=$arg; done
+case "$last" in
+  *' @ git+'*) exit 0 ;;
+  *) exit 1 ;;
+esac
+"""
+    python.write_text(pip_install)
+    if pipx:
+        (bin_dir / "pipx").write_text(pip_install)
+    vt = bin_dir / "vt"
+    vt.write_text("#!/bin/sh\nexit 0\n")
+    for executable in bin_dir.iterdir():
+        if not executable.is_symlink():
+            executable.chmod(0o755)
+
+    result = subprocess.run(
+        [BASH] if stdin else [BASH, str(installer)],
+        input=installer.read_text() if stdin else None,
+        env={**os.environ, "PATH": str(bin_dir), "MANAGED_STATUS": str(int(not managed))},
+        capture_output=True, text=True, timeout=10,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "gnomespeak[qr,youtube,push] @ git+https://" in result.stdout
+    assert ("--system-site-packages" if pipx else "--upgrade") in result.stdout
+    assert ("--break-system-packages" in result.stdout) == (managed and not pipx)
+    assert ("ran-setup-helper" in result.stdout) == stdin
+
+
 # --- `vt install-extension --if-needed` --------------------------------------
 
 @pytest.fixture

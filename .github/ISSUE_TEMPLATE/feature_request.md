@@ -24,8 +24,8 @@ the CLI's? -->
 GnomeSpeak is deliberately narrow by design: deterministic pre-configured
 actions, no LLM/NLP, no arbitrary text input, Linux-native (D-Bus, MPRIS,
 PipeWire, GNOME). Some categories of request are listed as out-of-scope or
-"won't fix by design" in [PENDING.md](../../PENDING.md) — worth a skim before
+known limitations and candidate work in [PENDING.md](../../PENDING.md) — worth a skim before
 filing, in case it's already been considered and rejected for a specific
 reason.
 
-- [ ] I've checked PENDING.md and this isn't already covered as "won't fix" or "future direction"
+- [ ] I've checked PENDING.md for known limitations and candidate work

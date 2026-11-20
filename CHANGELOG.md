@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+## [4.0.0] — 2026-11-20
+
+This release rolls the 4.0 desktop-remote roadmap into a stable version. If
+you installed 3.4.0 from GitHub, most of the feature set below is already
+familiar.
+
+### Highlights
+- Live WebSocket state and input with reconnect and HTTP fallback; a systemd
+  user service with optional named Cloudflare Tunnel; an installable web app
+  with Android share target and home-screen shortcuts.
+- Notification mirroring, dismiss, per-app mute and optional Web Push; Now
+  Playing artwork and timeline; per-app audio mixing and device selection;
+  portal screenshots.
+- Ring this PC, report the phone's battery, and switch among saved PCs without
+  sharing credentials across origins. The phone can view diagnostics and audit
+  records; guest pairing supports restricted, expiring access.
+
+### Fixed
+- The web app's service worker can now fetch its own assets and activate,
+  enabling offline fallback and browser share delivery.
+- Partial live-state refreshes no longer duplicate or retain stale phone
+  battery rows in REST snapshots or in a reconnected browser.
+- The standalone installer can upgrade an existing install and keeps the QR,
+  YouTube, and Web Push extras when it falls back from PyPI to GitHub. Local
+  and remote installer paths now use the same system-dependency helper.
+- A version tag builds and checks the source distribution and wheel once,
+  then uses the same files for GitHub Releases and PyPI.
+
+### Limitations
+- Notification default actions and inline replies are not supported; GnomeSpeak
+  does not own the desktop notification daemon.
+- No native Android app or GNOME Extensions store listing is required. The
+  extension is bundled in the Python package.
+- See [release verification notes](https://github.com/Vaithorat/gnomespeak/blob/v4.0.0/PENDING.md) for hardware checks that are
+  still open.
+
 ## [3.4.0] — 2026-09-03
 
 ### Added

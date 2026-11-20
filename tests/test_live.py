@@ -307,6 +307,45 @@ async def test_the_poll_still_serves_the_same_snapshot(client):
     assert "targets" in await resp.json()
 
 
+async def test_partial_refresh_replaces_phone_rows_in_rest_and_after_reconnect(client, monkeypatch):
+    from vt import state
+
+    monkeypatch.setattr(state, "refresh_for",
+                        lambda _: (("mpris:",), [player(status="paused")]))
+    phone = object()
+    client.vt.phones.report(phone, "Phone", 0.42, False)
+    client.vt._snapshot_cache = snapshot(player(), *client.vt._phone_targets())
+    client.vt.live.seed(client.vt._snapshot_cache)
+    headers = {"X-VT-Token": "test-token"}
+
+    async def connect():
+        async with client.post("/api/ws-ticket", headers=headers) as response:
+            ticket = (await response.json())["ticket"]
+        return await client.ws_connect(f"/ws?ticket={ticket}")
+
+    async with await connect() as ws:
+        await ws.receive_json()
+        client.vt.phones.report(phone, "Phone", 0.50, False)
+        assert await client.vt._publish_partial("mpris:firefox")
+        patch = await ws.receive_json(timeout=2)
+        assert patch["order"] == ["mpris:firefox", "phone:0"]
+        assert patch["changed"][-1]["subtitle"] == "50%"
+
+    async with await connect() as ws:
+        reconnected = await ws.receive_json(timeout=2)
+        assert reconnected["type"] == "state"
+    async with client.get("/api/state", headers=headers) as response:
+        assert (await response.json())["targets"] == reconnected["targets"]
+
+    client.vt.phones.forget(phone)
+    async with await connect() as ws:
+        await ws.receive_json()
+        assert await client.vt._publish_partial("mpris:firefox")
+        patch = await ws.receive_json(timeout=2)
+        assert patch["removed"] == ["phone:0"]
+        assert patch["order"] == ["mpris:firefox"]
+
+
 # --- phone battery and ringing ----------------------------------------------
 
 async def test_a_phone_battery_becomes_a_target(client):

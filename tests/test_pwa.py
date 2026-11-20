@@ -55,6 +55,15 @@ async def test_the_worker_is_never_cached(client):
     assert "no-cache" in resp.headers["Cache-Control"]
 
 
+async def test_the_worker_policy_allows_it_to_fetch_from_its_own_origin(client):
+    worker = await client.get("/sw.js")
+    policy = worker.headers["Content-Security-Policy"]
+    assert "default-src 'none'" in policy
+    assert "connect-src 'self'" in policy
+    manifest = await client.get("/manifest.webmanifest")
+    assert "connect-src" not in manifest.headers["Content-Security-Policy"]
+
+
 @pytest.mark.parametrize("name", ["icon-192.png", "icon-512.png", "icon-maskable-512.png"])
 async def test_the_icons_exist(client, name):
     resp = await client.get(f"/{name}")

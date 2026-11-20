@@ -1,16 +1,9 @@
-name: Publish to PyPI
+name: Publish release
 
 on:
-  release:
-    types: [published]
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to publish (must match a git tag)"
-        required: true
 
 permissions:
   contents: read
@@ -27,17 +20,71 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build twine
+
+      - name: Verify tag and extract release notes
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import tomllib
+          from pathlib import Path
+
+          root = Path(".")
+          version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"]
+          if tag != f"v{version}":
+              raise SystemExit(f"Tag {tag} does not match package version {version}")
+          notes = re.search(
+              rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## |\Z)",
+              (root / "CHANGELOG.md").read_text(), re.M | re.S,
+          )
+          if not notes or not notes[1].strip():
+              raise SystemExit(f"No changelog entry for {tag}")
+          Path("release-notes.md").write_text(notes[1].strip() + "\n")
+          PY
 
       - name: Build distribution
         run: |
           python -m build
+          python -m twine check --strict dist/*
 
       - name: Store dist directory
         uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+
+      - name: Store release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  github-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+
+      - name: Publish GitHub release with wheel and source distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
+            --title "GnomeSpeak $GITHUB_REF_NAME" --notes-file release-notes.md
 
   publish:
     needs: build

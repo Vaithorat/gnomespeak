@@ -11,39 +11,22 @@ set -e
 echo "🚀 GnomeSpeak Installer"
 echo ""
 
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="${BASH_SOURCE[0]:-}"
 
 # When run from a checkout, defer to the one place that knows the package names.
 # It checks capabilities rather than a package database, asks for sudo only when
 # something is missing, and never fails the run.
-if [ -x "$HERE/scripts/setup-system.sh" ]; then
+if [ -n "$SOURCE" ]; then
+    HERE="$(cd "$(dirname "$SOURCE")" && pwd)"
+fi
+if [ -n "$SOURCE" ] && [ -x "$HERE/scripts/setup-system.sh" ]; then
     "$HERE/scripts/setup-system.sh" || true
 else
-    # Detect distro
-    if [ -f /etc/debian_version ]; then
-        DISTRO="debian"
-    elif [ -f /etc/redhat-release ]; then
-        DISTRO="redhat"
+    SETUP_URL="https://raw.githubusercontent.com/Vaithorat/gnomespeak/main/scripts/setup-system.sh"
+    if setup_script="$(curl -fsSL "$SETUP_URL")"; then
+        bash -c "$setup_script" || true
     else
-        echo "⚠ Unsupported Linux distribution — install these yourself:"
-        echo "  python3-dbus python3-gi wl-clipboard xclip dbus-monitor"
-        echo "  wireplumber xdg-user-dirs libnotify udisks2"
-        DISTRO="unknown"
-    fi
-
-    # wl-clipboard and xclip back clipboard sync -- one per session type, and
-    # installing both means the same install works on Wayland and X11.
-    # dbus-monitor (dbus-bin / dbus-tools) is what notification mirroring reads,
-    # wpctl (wireplumber) is volume, and xdg-user-dir finds the Downloads folder
-    # that file transfer lands in.
-    echo "📦 Installing system dependencies..."
-    if [ "$DISTRO" = "debian" ]; then
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq python3-dbus python3-gi wl-clipboard xclip \
-            dbus-bin wireplumber xdg-user-dirs libnotify-bin udisks2
-    elif [ "$DISTRO" = "redhat" ]; then
-        sudo dnf install -y -q python3-dbus python3-gobject wl-clipboard xclip \
-            dbus-tools wireplumber xdg-user-dirs libnotify udisks2
+        echo "⚠ Could not fetch the system dependency helper. Check optional dependencies with vt doctor."
     fi
 fi
 
@@ -58,7 +41,7 @@ fi
 # The extras are the ones a phone remote is expected to have: a QR code at
 # startup, YouTube search, and Web Push (which is also what --tls uses).
 PACKAGE="gnomespeak[qr,youtube,push]"
-GIT_PACKAGE="git+https://github.com/Vaithorat/gnomespeak.git"
+GIT_PACKAGE="$PACKAGE @ git+https://github.com/Vaithorat/gnomespeak.git"
 
 externally_managed() {
     python3 - <<'PY'
@@ -70,27 +53,27 @@ PY
 
 echo "📥 Installing GnomeSpeak..."
 if ! externally_managed; then
-    python3 -m pip install --user "$PACKAGE" || {
-        echo "   (PyPI package not found yet, falling back to GitHub repository)"
-        python3 -m pip install --user "$GIT_PACKAGE"
+    python3 -m pip install --user --upgrade "$PACKAGE" || {
+        echo "   (PyPI install failed, falling back to GitHub repository)"
+        python3 -m pip install --user --upgrade "$GIT_PACKAGE"
     }
 elif command -v pipx >/dev/null 2>&1; then
     # --system-site-packages is not optional here: dbus-python and gi are
     # distro packages that cannot be pip-installed, and without them there are
     # no media players and no window control.
     echo "   (this distro manages its Python packages, so installing with pipx)"
-    pipx install --system-site-packages "$PACKAGE" || {
-        echo "   (PyPI package not found yet, falling back to GitHub repository)"
-        pipx install --system-site-packages "$GIT_PACKAGE"
+    pipx install --system-site-packages --force "$PACKAGE" || {
+        echo "   (PyPI install failed, falling back to GitHub repository)"
+        pipx install --system-site-packages --force "$GIT_PACKAGE"
     }
 else
     echo "   (this distro manages its Python packages, and pipx is not installed;"
     echo "    installing into your user site with --break-system-packages, which"
     echo "    touches nothing the distro owns. 'sudo apt install pipx' first if"
     echo "    you would rather have it isolated.)"
-    python3 -m pip install --user --break-system-packages "$PACKAGE" || {
-        echo "   (PyPI package not found yet, falling back to GitHub repository)"
-        python3 -m pip install --user --break-system-packages "$GIT_PACKAGE"
+    python3 -m pip install --user --upgrade --break-system-packages "$PACKAGE" || {
+        echo "   (PyPI install failed, falling back to GitHub repository)"
+        python3 -m pip install --user --upgrade --break-system-packages "$GIT_PACKAGE"
     }
 fi
 
